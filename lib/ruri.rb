@@ -5,8 +5,11 @@ module Ruri
 end
 
 require_relative "ruri/diagnostic"
-require_relative "ruri/emitter"
 require_relative "ruri/forms"
+require_relative "ruri/elisp"
+require_relative "ruri/lowerer"
+require_relative "ruri/printer"
+require_relative "ruri/emitter"
 require_relative "ruri/source_scan"
 require_relative "ruri/parser"
 

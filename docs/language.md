@@ -9,15 +9,16 @@ everything else is rejected with a source position.
 ## Pipeline
 
 ```
-.ruri source → Prism parse → validation → internal forms → escaped .el text
+.ruri source → Prism parse → validation → typed Ruri forms → generic Elisp AST → .el text
 ```
 
 - The whole input is parsed and validated before anything is emitted. A
   file with one valid command and one invalid line produces no output.
 - The compiler never evaluates Ruby input: no `eval`, `load`,
   `instance_eval`, or any other execution of source text. The Prism AST is
-  matched structurally and internal forms are serialized by a structured
-  emitter, so string literals can never become additional Lisp forms.
+  matched structurally, lowered into generic Elisp nodes, and serialized by a
+  deterministic S-expression printer. Raw strings cannot be inserted into
+  lists, so string literals can never become additional Lisp forms.
 - Generated files begin with `;;; -*- lexical-binding: t; -*-`, identify
   the `.ruri` file they were generated from, and have no runtime
   dependency on Ruby, the compiler, or any Emacs helper package.

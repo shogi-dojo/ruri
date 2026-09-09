@@ -123,6 +123,20 @@ validated internal forms; it never evaluates the input (no `eval`, no
 emitter escapes every string, so literal text can never become additional
 Lisp forms.
 
+## Compiler architecture
+
+Compilation has four explicit stages:
+
+```text
+Prism AST → typed Ruri forms → generic Elisp AST → deterministic printer
+```
+
+The parser owns the Ruri language contract. The lowerer maps those language
+forms to generic Lisp lists, symbols, and strings. The printer knows only
+S-expression structure, escaping, and layout; it has no special cases for
+`defun`, `insert`, or other Emacs forms. This keeps generated output readable
+while giving future language constructs a single lowering boundary.
+
 ## Status & limitations
 
 This is the hello-world POC vertical slice. Not supported (by design):
