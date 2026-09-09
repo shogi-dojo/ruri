@@ -48,6 +48,7 @@ module Ruri
       def render(node, indent)
         padding = "  " * indent
         return render_collection(node.items, indent, "(", ")") if node.is_a?(List)
+        return ["#{padding}#{render_inline(node)}"] if node.is_a?(InlineList)
         return render_collection(node.items, indent, "[", "]") if node.is_a?(Vector)
 
         ["#{padding}#{render_inline(node)}"]
@@ -84,6 +85,8 @@ module Ruri
           true
         when Quote
           inline?(node.value)
+        when InlineList
+          true
         when Vector
           node.items.all? { |item| inline?(item) }
         when List
@@ -103,6 +106,8 @@ module Ruri
           node.value.to_s
         when Quote
           "'#{render_inline(node.value)}"
+        when InlineList
+          "(#{node.items.map { |item| render_inline(item) }.join(" ")})"
         when Vector
           return "[#{node.items.map { |item| render_inline(item) }.join(" ")}]" if inline?(node)
 

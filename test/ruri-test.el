@@ -144,5 +144,30 @@
       (call-interactively #'expression-cmd)
       (should (equal "t/nil/nil [1 2.5 hello-world]" (buffer-string))))))
 
+(ert-deftest ruri-test/locals-conditionals-and-elsif-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri locals " t))
+         (source (expand-file-name "locals.ruri" dir)))
+    (with-temp-file source
+      (insert "command :local_cmd do\n"
+              "  interactive\n"
+              "  case_fold_search = \"unset\"\n"
+              "  if false\n"
+              "    case_fold_search = \"wrong\"\n"
+              "  elsif true\n"
+              "    case_fold_search = \"right\"\n"
+              "  else\n"
+              "    case_fold_search = \"also wrong\"\n"
+              "  end\n"
+              "  unless false\n"
+              "    el.insert(case_fold_search)\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    (let ((case-fold-search 'untouched))
+      (with-temp-buffer
+        (call-interactively #'local-cmd)
+        (should (equal "right" (buffer-string))))
+      (should (eq case-fold-search 'untouched)))))
+
 (provide 'ruri-test)
 ;;; ruri-test.el ends here

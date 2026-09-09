@@ -154,7 +154,7 @@ class ParserTest < Minitest::Test
       end
     RURI
 
-    assert_match(/only el\.\* calls and literals are allowed/, diag.message)
+    assert_match(/only locals, el\.\* calls, and literals are allowed/, diag.message)
   end
 
   def test_rejects_keyword_arguments
@@ -247,16 +247,120 @@ end')
     assert_match(/interpolated or adjacent string literals are not supported/, diag.message)
   end
 
-  def test_rejects_assignments
-    diag = single_diagnostic(<<~'RURI')
-      command :a do
+  def test_parses_lexical_locals_and_conditionals
+    command = parse(<<~RURI).first
+      command :describe do
         interactive
-        x = 1
+        name = el.buffer_name()
+        if name
+          el.message("Buffer: %s", name)
+        elsif false
+          name = "fallback"
+        else
+          el.message("No buffer")
+        end
+        unless el.string_empty_p(name)
+          el.message("named")
+        end
       end
     RURI
 
-    assert_match(/unsupported construct: LocalVariableWriteNode/, diag.message)
-    assert_equal 3, diag.line
+    write, conditional, negated = command.body.drop(1)
+    assert_instance_of Ruri::Forms::LocalWrite, write
+    assert_equal "name", write.source_name
+    assert_equal "ruri--local-name", write.name
+    assert_instance_of Ruri::Forms::Call, write.value
+
+    assert_instance_of Ruri::Forms::Conditional, conditional
+    assert_equal false, conditional.negated
+    assert_instance_of Ruri::Forms::LocalRead, conditional.condition
+    assert_equal "ruri--local-name", conditional.condition.name
+    assert_instance_of Ruri::Forms::Conditional, conditional.else_body.first
+    assert_instance_of Ruri::Forms::LocalWrite,
+                       conditional.else_body.first.then_body.first
+
+    assert_instance_of Ruri::Forms::Conditional, negated
+    assert_equal true, negated.negated
+    assert_instance_of Ruri::Forms::LocalRead,
+                       negated.condition.arguments.first
+  end
+
+  def test_local_scope_covers_the_whole_command_and_nested_blocks
+    command = parse(<<~RURI).first
+      command :scope do
+        interactive
+        el.message("%S", later)
+        if true
+          later = "set"
+        end
+        with_current_buffer("*scratch*") do
+          el.message("%s", later)
+        end
+      end
+    RURI
+
+    first_read = command.body[1].arguments.last
+    nested_read = command.body[3].body.first.arguments.last
+    assert_equal "ruri--local-later", first_read.name
+    assert_equal first_read, nested_read
+  end
+
+  def test_does_not_leak_locals_between_commands
+    diag = single_diagnostic(<<~RURI)
+      command :writer do
+        interactive
+        value = 1
+      end
+
+      command :reader do
+        interactive
+        el.message("%S", value)
+      end
+    RURI
+
+    assert_match(/only locals, el\.\* calls, and literals are allowed/, diag.message)
+    assert_equal 8, diag.line
+  end
+
+  def test_rejects_compound_assignment
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        value = 1
+        value += 1
+      end
+    RURI
+
+    assert_match(/unsupported construct: LocalVariableOperatorWriteNode/, diag.message)
+    assert_equal 4, diag.line
+  end
+
+  def test_rejects_reserved_and_invalid_local_names
+    %w[t _hidden].each do |name|
+      diag = single_diagnostic(<<~RURI)
+        command :a do
+          interactive
+          #{name} = 1
+        end
+      RURI
+
+      assert_match(/invalid local variable name `#{name}`/, diag.message)
+      assert_equal 3, diag.line
+    end
+  end
+
+  def test_rejects_interactive_inside_conditional
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        if true
+          interactive
+        end
+      end
+    RURI
+
+    assert_match(/interactive is only allowed as the first statement of a command body/, diag.message)
+    assert_equal 4, diag.line
   end
 
   def test_rejects_heredocs

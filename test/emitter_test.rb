@@ -152,4 +152,27 @@ class EmitterTest < Minitest::Test
           (vector 1 'x))
     ELISP
   end
+
+  def test_emits_hygienic_lexical_locals_and_conditionals
+    output = Ruri.compile(<<~RURI, path: "locals.ruri")
+      command :choose do
+        interactive
+        case_fold_search = el.buffer_modified_p()
+        if case_fold_search
+          el.message("changed")
+        else
+          el.message("clean")
+        end
+        unless case_fold_search
+          el.message("unchanged")
+        end
+      end
+    RURI
+
+    assert_includes output, "(let (ruri--local-case-fold-search)"
+    assert_includes output, "(setq ruri--local-case-fold-search"
+    assert_includes output, "(if ruri--local-case-fold-search"
+    assert_includes output, "(not ruri--local-case-fold-search)"
+    refute_includes output, "(let (case-fold-search)"
+  end
 end

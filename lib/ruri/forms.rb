@@ -29,5 +29,13 @@ module Ruri
 
     # Ruby array syntax denotes an Emacs Lisp vector value.
     Vector = Data.define(:elements)
+
+    # A hygienically renamed lexical variable assignment and reference.
+    LocalWrite = Data.define(:source_name, :name, :value)
+    LocalRead = Data.define(:source_name, :name)
+
+    # Ruby if/unless statement. Unless uses +negated+ so lowering needs only
+    # one conditional representation. Branches contain ordinary statements.
+    Conditional = Data.define(:condition, :then_body, :else_body, :negated)
   end
 end

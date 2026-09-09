@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.2
+# Ruri language contract — version 0.3
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.2: every construct below is supported,
+is the exact scope of version 0.3: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -32,6 +32,9 @@ everything else is rejected with a source position.
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
 | `el.message("value: %s", el.buffer_name())` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Blocks and keyword arguments are rejected. |
+| `name = el.buffer_name()` | Assigns a command-local variable. The right-hand side may be any supported expression. A local is visible throughout its command, including before its first assignment (where its value is `nil`) and inside nested blocks. Compound assignments are rejected. |
+| `if condition … elsif condition … else … end` | Evaluates supported expression conditions with Emacs Lisp truth semantics. Branches contain ordinary supported statements. `elsif` and `else` are optional. |
+| `unless condition … else … end` | The negated conditional form. The `else` branch is optional. |
 | Comments and whitespace | Accepted according to Ruby syntax (`#` line comments, `=begin`/`=end` block comments); no effect on semantics. |
 
 ## Emacs Lisp calls
@@ -50,7 +53,8 @@ everything else is rejected with a source position.
 
 ## Expressions
 
-Expressions are currently allowed only as arguments to `el.*` calls.
+Expressions are allowed as assignment values, conditional predicates, and
+arguments to `el.*` calls.
 
 | Ruby expression | Emacs Lisp output | Meaning |
 | --- | --- | --- |
@@ -61,6 +65,7 @@ Expressions are currently allowed only as arguments to `el.*` calls.
 | `false`, `nil` | `nil` | Emacs has one false/empty-list value, so these intentionally collapse |
 | `:after_save_hook` | `'after-save-hook` | Quoted Elisp symbol; underscores become hyphens |
 | `[1, :two, el.point()]` | `(vector 1 'two (point))` | Vector whose elements are evaluated in order |
+| `name` | `ruri--local-name` | Reference to a local assigned somewhere in the same command |
 
 Ruby arrays lower to a call to `vector`, rather than bracket syntax, because an
 Emacs vector literal is self-evaluating and would not evaluate nested calls.
@@ -75,6 +80,13 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
   valid command names.
 - Reloading the same extension may redefine its own command normally —
   the duplicate check is per compile unit, not per Emacs session.
+- Local names follow the same ASCII source pattern. The compiler emits a
+  private `ruri--local-` prefix and replaces underscores with hyphens, so a
+  source name such as `case_fold_search` cannot accidentally bind Emacs's
+  special `case-fold-search` variable. The name `t` is reserved.
+- Every assigned local is initialized to `nil` in one lexical `let` around
+  the command body. Assignments mutate that binding with `setq`; commands do
+  not share locals.
 
 ## Strings
 
@@ -86,15 +98,16 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
   and other ASCII control characters (emitted as three-digit octal
   escapes). Non-ASCII UTF-8 characters are written literally and the
   output file is UTF-8.
-- Rejected in v0.2: string interpolation (`#{…}`), heredocs, character
+- Rejected in v0.3: string interpolation (`#{…}`), heredocs, character
   literals, and concatenated or adjacent string forms.
 
 ## Rejected outright
 
 Everything outside the table above, including but not limited to:
 
-- Ruby variables, assignments, classes, modules, conditionals, loops, hashes,
-  ranges, and standalone literal statements.
+- Ruby instance, class, and global variables; constants; destructuring and
+  compound assignments; classes, modules, loops, hashes, ranges, and
+  standalone literal statements.
 - Explicit receivers other than the reserved `el` namespace
   (`Kernel.insert("x")`, `foo.bar`), safe-navigation, operator calls,
   unqualified arbitrary method calls, `require`, `lambda`/`proc`.
@@ -134,5 +147,5 @@ Generated Lisp (`examples/hello.el`):
 
 ## Reserved for later versions
 
-Local variables, conditionals, closures, block-taking generic calls,
-additional macros, and a raw Lisp escape hatch remain out of scope.
+Closures, block-taking generic calls, additional macros, and a raw Lisp escape
+hatch remain out of scope.

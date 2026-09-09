@@ -14,7 +14,7 @@ class LowererTest < Minitest::Test
       Ruri::Elisp.list(
         Ruri::Elisp.symbol("defun"),
         Ruri::Elisp.symbol("hello-buffer"),
-        Ruri::Elisp.list,
+        Ruri::Elisp.inline_list,
         Ruri::Elisp.list(Ruri::Elisp.symbol("interactive")),
         Ruri::Elisp.list(
           Ruri::Elisp.symbol("with-current-buffer"),
@@ -55,5 +55,41 @@ class LowererTest < Minitest::Test
     assert_equal "hello-world", call.items[7].value.name
     assert_instance_of Ruri::Elisp::List, call.items[8]
     assert_equal "vector", call.items[8].items.first.name
+  end
+
+  def test_lowers_locals_and_conditionals_to_lexical_elisp
+    command = parse(<<~RURI).first
+      command :choose do
+        interactive
+        value = nil
+        if el.buffer_modified_p()
+          value = "changed"
+          el.message("%s", value)
+        else
+          value = "clean"
+        end
+        unless value
+          el.message("missing")
+        end
+      end
+    RURI
+
+    defun = Ruri::Lowerer.lower([command]).first
+    interactive, scope = defun.items.drop(3)
+    assert_equal "interactive", interactive.items.first.name
+    assert_equal "let", scope.items.first.name
+    assert_instance_of Ruri::Elisp::InlineList, scope.items[1]
+    assert_equal ["ruri--local-value"], scope.items[1].items.map(&:name)
+    assert_equal "setq", scope.items[2].items.first.name
+
+    conditional = scope.items[3]
+    assert_equal "if", conditional.items.first.name
+    assert_equal "buffer-modified-p", conditional.items[1].items.first.name
+    assert_equal "progn", conditional.items[2].items.first.name
+    assert_equal "setq", conditional.items[3].items.first.name
+
+    negated = scope.items[4]
+    assert_equal "not", negated.items[1].items.first.name
+    assert_equal "ruri--local-value", negated.items[1].items[1].name
   end
 end

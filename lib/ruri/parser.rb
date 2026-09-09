@@ -190,8 +190,30 @@ module Ruri
       end
       @seen_names[lisp_name] = source_name
 
-      body = parse_command_body(node.block)
+      body = with_local_scope(node.block) { parse_command_body(node.block) }
       @commands << Forms::Command.new(source_name: source_name, name: lisp_name, body: body)
+    end
+
+    def with_local_scope(block)
+      previous_names = @local_names
+      @local_names = collect_local_names(block)
+      yield
+    ensure
+      @local_names = previous_names
+    end
+
+    def collect_local_names(node, names = {})
+      return names.keys unless node
+
+      if node.is_a?(Prism::LocalVariableWriteNode)
+        names[node.name.to_s] = true
+      end
+      node.child_nodes.each { |child| collect_local_names(child, names) }
+      names.keys
+    end
+
+    def generated_local_name(source_name)
+      "ruri--local-#{source_name.tr("_", "-")}"
     end
 
     def parse_command_body(block)
@@ -200,6 +222,12 @@ module Ruri
       interactive_seen = false
       interactive_problem_reported = false
       statements.each_with_index do |stmt, index|
+        if stmt.is_a?(Prism::LocalVariableWriteNode) ||
+           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode)
+          form = parse_structured_statement(stmt)
+          forms << form if form
+          next
+        end
         unless stmt.is_a?(Prism::CallNode)
           unsupported(stmt)
           next
@@ -300,6 +328,67 @@ module Ruri
       Forms::Insert.new(text: text)
     end
 
+    def parse_structured_statement(node)
+      case node
+      when Prism::LocalVariableWriteNode
+        parse_local_write(node)
+      when Prism::IfNode
+        parse_conditional(node, negated: false)
+      when Prism::UnlessNode
+        parse_conditional(node, negated: true)
+      else
+        unsupported(node)
+      end
+    end
+
+    def parse_local_write(node)
+      source_name = node.name.to_s
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(node.name_loc || node.location,
+              "invalid local variable name `#{source_name}`")
+        return nil
+      end
+
+      value = parse_expression(node.value)
+      return nil unless value
+
+      Forms::LocalWrite.new(
+        source_name: source_name,
+        name: generated_local_name(source_name),
+        value: value
+      )
+    end
+
+    def parse_conditional(node, negated:)
+      condition = parse_expression(node.predicate)
+      then_body = parse_buffer_statements(node.statements&.body || [])
+      else_body = parse_conditional_else(node)
+      return nil unless condition
+
+      Forms::Conditional.new(
+        condition: condition,
+        then_body: then_body,
+        else_body: else_body,
+        negated: negated
+      )
+    end
+
+    def parse_conditional_else(node)
+      clause = node.is_a?(Prism::IfNode) ? node.subsequent : node.else_clause
+      case clause
+      when nil
+        []
+      when Prism::ElseNode
+        parse_buffer_statements(clause.statements&.body || [])
+      when Prism::IfNode
+        form = parse_conditional(clause, negated: false)
+        form ? [form] : []
+      else
+        unsupported(clause)
+        []
+      end
+    end
+
     def parse_elisp_call(node)
       if node.block
         error(node.location, "el.* calls do not take blocks")
@@ -343,14 +432,40 @@ module Ruri
       when Prism::ArrayNode
         elements = node.elements.map { |element| parse_expression(element) }
         elements.any?(&:nil?) ? nil : Forms::Vector.new(elements: elements)
+      when Prism::LocalVariableReadNode
+        parse_local_read(node)
       when Prism::CallNode
         return parse_elisp_call(node) if elisp_call?(node)
+        # Ruby parses a bare name used before its first textual assignment as
+        # a zero-argument call. Ruri locals have command-wide lexical scope,
+        # so reinterpret that precise shape when a matching assignment exists.
+        return parse_local_read(node) if local_reference_call?(node)
 
-        error(node.location, "unsupported expression: only el.* calls and literals are allowed")
+        error(node.location,
+              "unsupported expression: only locals, el.* calls, and literals are allowed")
       else
         error(node.location,
               "unsupported expression: #{node.class.name.delete_prefix("Prism::")}")
       end
+    end
+
+    def parse_local_read(node)
+      source_name = node.name.to_s
+      unless @local_names&.include?(source_name)
+        error(node.location, "local variable `#{source_name}` is not defined in this command")
+        return nil
+      end
+
+      Forms::LocalRead.new(
+        source_name: source_name,
+        name: generated_local_name(source_name)
+      )
+    end
+
+    def local_reference_call?(node)
+      @local_names&.include?(node.name.to_s) &&
+        node.receiver.nil? && node.arguments.nil? && node.block.nil? &&
+        node.opening_loc.nil?
     end
 
     def parse_symbol_expression(node)
@@ -372,6 +487,12 @@ module Ruri
     def parse_buffer_statements(statements)
       forms = []
       statements.each do |stmt|
+        if stmt.is_a?(Prism::LocalVariableWriteNode) ||
+           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode)
+          form = parse_structured_statement(stmt)
+          forms << form if form
+          next
+        end
         unless stmt.is_a?(Prism::CallNode)
           unsupported(stmt)
           next

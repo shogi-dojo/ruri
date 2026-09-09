@@ -69,4 +69,16 @@ class ElispTest < Minitest::Test
     assert_raises(ArgumentError) { Ruri::Elisp.vector("raw") }
     assert_raises(ArgumentError) { Ruri::Elisp.quote("raw") }
   end
+
+  def test_prints_inline_lists_and_rejects_nested_collections
+    arguments = Ruri::Elisp.inline_list(
+      Ruri::Elisp.symbol("first"),
+      Ruri::Elisp.symbol("second")
+    )
+
+    assert_equal "(first second)", Ruri::Elisp::Printer.print(arguments)
+    assert_raises(ArgumentError) do
+      Ruri::Elisp.inline_list(Ruri::Elisp.list(Ruri::Elisp.symbol("nested")))
+    end
+  end
 end

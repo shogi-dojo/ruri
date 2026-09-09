@@ -12,6 +12,7 @@ module Ruri
     Integer = Data.define(:value)
     Float = Data.define(:value)
     List = Data.define(:items)
+    InlineList = Data.define(:items)
     Vector = Data.define(:items)
     Quote = Data.define(:value)
 
@@ -49,6 +50,15 @@ module Ruri
       List.new(items: items.freeze)
     end
 
+    def inline_list(*items)
+      validate_items!(items, "inline lists")
+      unless items.all? { |item| scalar?(item) }
+        raise ArgumentError, "inline lists may contain only scalar Elisp nodes"
+      end
+
+      InlineList.new(items: items.freeze)
+    end
+
     def vector(*items)
       validate_items!(items, "vectors")
       Vector.new(items: items.freeze)
@@ -61,7 +71,13 @@ module Ruri
     end
 
     def node?(value)
-      [Symbol, String, Integer, Float, List, Vector, Quote].any? { |type| value.is_a?(type) }
+      [Symbol, String, Integer, Float, List, InlineList, Vector, Quote].any? do |type|
+        value.is_a?(type)
+      end
+    end
+
+    def scalar?(value)
+      [Symbol, String, Integer, Float, Quote].any? { |type| value.is_a?(type) }
     end
 
     def validate_items!(items, collection)
