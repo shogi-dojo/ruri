@@ -133,17 +133,41 @@ class ParserTest < Minitest::Test
     assert_equal "current-buffer", call.arguments.first.name
   end
 
-  def test_rejects_blocks_on_elisp_calls
-    diag = single_diagnostic(<<~RURI)
-      command :a do
+  def test_parses_block_body_on_elisp_calls
+    command = parse(<<~RURI).first
+      command :block_form do
         interactive
-        el.message("x") do
-          el.message("y")
+        el.save_excursion do
+          position = el.point()
+          el.goto_char(el.point_min())
+          if position
+            el.message("moved")
+          end
         end
       end
     RURI
 
-    assert_match(/el\.\* calls do not take blocks/, diag.message)
+    call = command.body[1]
+    assert_instance_of Ruri::Forms::Call, call
+    assert_equal "save-excursion", call.name
+    assert_empty call.arguments
+    assert_instance_of Ruri::Forms::LocalWrite, call.body[0]
+    assert_instance_of Ruri::Forms::Call, call.body[1]
+    assert_instance_of Ruri::Forms::Conditional, call.body[2]
+  end
+
+  def test_rejects_parameters_on_elisp_body_blocks
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        el.save_excursion do |value|
+          el.message("%S", value)
+        end
+      end
+    RURI
+
+    assert_match(/el\.\* body blocks do not take parameters/, diag.message)
+    assert_equal 3, diag.line
   end
 
   def test_rejects_unqualified_calls_inside_elisp_arguments

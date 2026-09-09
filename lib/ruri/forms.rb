@@ -20,8 +20,9 @@ module Ruri
     Insert = Data.define(:text)
 
     # An explicit call through the `el' namespace. Arguments are expression
-    # forms and +name+ is already normalized from snake_case to kebab-case.
-    Call = Data.define(:name, :arguments)
+    # forms, an optional Ruby block becomes trailing Elisp body forms, and
+    # +name+ is already normalized from snake_case to kebab-case.
+    Call = Data.define(:name, :arguments, :body)
 
     # Scalar expression value. Supported kinds are :string, :integer, :float,
     # :true, :false, :nil, and :symbol.

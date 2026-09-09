@@ -92,4 +92,30 @@ class LowererTest < Minitest::Test
     assert_equal "not", negated.items[1].items.first.name
     assert_equal "ruri--local-value", negated.items[1].items[1].name
   end
+
+  def test_lowers_generic_block_forms_and_collects_nested_locals
+    command = parse(<<~RURI).first
+      command :preserve_point do
+        interactive
+        result = el.save_excursion do
+          position = el.point()
+          el.goto_char(el.point_min())
+          el.insert(el.number_to_string(position))
+        end
+        el.message("%S", result)
+      end
+    RURI
+
+    defun = Ruri::Lowerer.lower([command]).first
+    scope = defun.items.last
+    assert_equal %w[ruri--local-result ruri--local-position],
+                 scope.items[1].items.map(&:name)
+
+    assignment = scope.items[2]
+    block_form = assignment.items[2]
+    assert_equal "save-excursion", block_form.items.first.name
+    assert_equal "setq", block_form.items[1].items.first.name
+    assert_equal "goto-char", block_form.items[2].items.first.name
+    assert_equal "insert", block_form.items[3].items.first.name
+  end
 end

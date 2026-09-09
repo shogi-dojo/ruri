@@ -42,14 +42,28 @@ module Ruri
         case statement
         when Forms::LocalWrite
           names << statement.name unless names.include?(statement.name)
+          collect_expression_locals(statement.value, names)
         when Forms::WithCurrentBuffer
           collect_locals(statement.body, names)
         when Forms::Conditional
+          collect_expression_locals(statement.condition, names)
           collect_locals(statement.then_body, names)
           collect_locals(statement.else_body, names)
+        when Forms::Call
+          collect_expression_locals(statement, names)
         end
       end
       names
+    end
+
+    def collect_expression_locals(expression, names)
+      case expression
+      when Forms::Call
+        expression.arguments.each { |argument| collect_expression_locals(argument, names) }
+        collect_locals(expression.body, names)
+      when Forms::Vector
+        expression.elements.each { |element| collect_expression_locals(element, names) }
+      end
     end
 
     def lower_statement(statement)
@@ -82,7 +96,8 @@ module Ruri
     def lower_call(call)
       Elisp.list(
         Elisp.symbol(call.name),
-        *call.arguments.map { |argument| lower_expression(argument) }
+        *call.arguments.map { |argument| lower_expression(argument) },
+        *call.body.map { |statement| lower_statement(statement) }
       )
     end
 

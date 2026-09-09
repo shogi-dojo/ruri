@@ -390,8 +390,9 @@ module Ruri
     end
 
     def parse_elisp_call(node)
-      if node.block
-        error(node.location, "el.* calls do not take blocks")
+      if node.block&.parameters
+        error(block_parameters_location(node.block),
+              "el.* body blocks do not take parameters")
         return nil
       end
 
@@ -406,9 +407,16 @@ module Ruri
       parsed_arguments = arguments.map { |argument| parse_expression(argument) }
       return nil if parsed_arguments.any?(&:nil?)
 
+      body = if node.block
+               parse_buffer_statements(node.block.body&.body || [])
+             else
+               []
+             end
+
       Forms::Call.new(
         name: normalize_elisp_name(source_name),
-        arguments: parsed_arguments
+        arguments: parsed_arguments,
+        body: body
       )
     end
 

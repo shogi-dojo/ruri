@@ -175,4 +175,22 @@ class EmitterTest < Minitest::Test
     assert_includes output, "(not ruri--local-case-fold-search)"
     refute_includes output, "(let (case-fold-search)"
   end
+
+  def test_emits_generic_elisp_body_forms
+    output = Ruri.compile(<<~RURI, path: "blocks.ruri")
+      command :preserve_point do
+        interactive
+        el.save_excursion do
+          position = el.point()
+          el.goto_char(el.point_min())
+          el.insert(el.number_to_string(position))
+        end
+      end
+    RURI
+
+    assert_includes output, "(let (ruri--local-position)"
+    assert_includes output, "(save-excursion"
+    assert_includes output, "(setq ruri--local-position"
+    assert_includes output, "(goto-char"
+  end
 end

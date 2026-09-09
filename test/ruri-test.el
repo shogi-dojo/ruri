@@ -169,5 +169,23 @@
         (should (equal "right" (buffer-string))))
       (should (eq case-fold-search 'untouched)))))
 
+(ert-deftest ruri-test/generic-block-forms-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri block forms " t))
+         (source (expand-file-name "blocks.ruri" dir)))
+    (with-temp-file source
+      (insert "command :block_cmd do\n"
+              "  interactive\n"
+              "  el.save_excursion do\n"
+              "    el.goto_char(el.point_min())\n"
+              "    el.insert(\"start-\")\n"
+              "  end\n"
+              "  el.insert(\"-end\")\n"
+              "end\n"))
+    (ruri-load-file source)
+    (with-temp-buffer
+      (insert "body")
+      (call-interactively #'block-cmd)
+      (should (equal "start-body-end" (buffer-string))))))
+
 (provide 'ruri-test)
 ;;; ruri-test.el ends here
