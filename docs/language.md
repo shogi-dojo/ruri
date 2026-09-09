@@ -31,9 +31,9 @@ everything else is rejected with a source position.
 | `interactive` | Emits `(interactive)`. Exactly once and first in each command body; no arguments, no block. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
-| `el.message("value: %s", el.buffer_name())` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
+| `el.message("value: %s", el.buffer_name)` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
 | `el.save_excursion do … end` | Emits an Elisp form with the Ruby block appended as body forms: `(save-excursion …)`. Positional arguments, nested statements, locals, and conditionals compose inside the body. Block parameters are rejected. |
-| `name = el.buffer_name()` | Assigns a command-local variable. The right-hand side may be any supported expression. A local is visible throughout its command, including before its first assignment (where its value is `nil`) and inside nested blocks. Compound assignments are rejected. |
+| `name = el.buffer_name` | Assigns a command-local variable. The right-hand side may be any supported expression. A local is visible throughout its command, including before its first assignment (where its value is `nil`) and inside nested blocks. Compound assignments are rejected. |
 | `if condition … elsif condition … else … end` | Evaluates supported expression conditions with Emacs Lisp truth semantics. Branches contain ordinary supported statements. `elsif` and `else` are optional. |
 | `unless condition … else … end` | The negated conditional form. The `else` branch is optional. |
 | `fn do \|value\| … end` | Creates a lexical lambda: `(lambda (ruri--local-value) …)`. Zero or more required positional parameters are accepted. The body uses normal Ruri statements and may capture command locals. |
@@ -52,6 +52,9 @@ everything else is rejected with a source position.
 - Function names must use lowercase Ruby method syntax. Underscores become
   hyphens, while a trailing `?` or `!` is preserved: `el.buffer_live?` emits
   `buffer-live?`.
+- Zero-argument calls idiomatically omit parentheses: `el.buffer_name` emits
+  `(buffer-name)`. An explicit empty pair, `el.buffer_name()`, remains accepted
+  and has identical semantics.
 - Positional arguments may contain any supported expression, including another
   `el.*` call. An optional block is lowered to trailing body forms. This makes
   body-oriented macros such as `save-excursion`, `progn`, and
@@ -77,7 +80,7 @@ arguments to `el.*` calls.
 | `true` | `t` | True |
 | `false`, `nil` | `nil` | Emacs has one false/empty-list value, so these intentionally collapse |
 | `:after_save_hook` | `'after-save-hook` | Quoted Elisp symbol; underscores become hyphens |
-| `[1, :two, el.point()]` | `(vector 1 'two (point))` | Vector whose elements are evaluated in order |
+| `[1, :two, el.point]` | `(vector 1 'two (point))` | Vector whose elements are evaluated in order |
 | `name` | `ruri--local-name` | Reference to a local assigned somewhere in the same command |
 | `fn do \|value\| … end` | `(lambda (ruri--local-value) …)` | Lexical anonymous function |
 | `function(:identity)` | `(function identity)` | Named function value suitable for callbacks |

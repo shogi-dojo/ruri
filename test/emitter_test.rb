@@ -140,7 +140,7 @@ class EmitterTest < Minitest::Test
     output = Ruri.compile(<<~RURI, path: "expressions.ruri")
       command :expression_cmd do
         interactive
-        el.message("buffer: %s", el.buffer_name(), 42, 1.5, true, false, nil,
+        el.message("buffer: %s", el.buffer_name, 42, 1.5, true, false, nil,
                    :after_save_hook, [1, :x])
       end
     RURI
@@ -157,7 +157,7 @@ class EmitterTest < Minitest::Test
     output = Ruri.compile(<<~RURI, path: "locals.ruri")
       command :choose do
         interactive
-        case_fold_search = el.buffer_modified_p()
+        case_fold_search = el.buffer_modified_p
         if case_fold_search
           el.message("changed")
         else
@@ -181,8 +181,8 @@ class EmitterTest < Minitest::Test
       command :preserve_point do
         interactive
         el.save_excursion do
-          position = el.point()
-          el.goto_char(el.point_min())
+          position = el.point
+          el.goto_char(el.point_min)
           el.insert(el.number_to_string(position))
         end
       end

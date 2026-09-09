@@ -106,7 +106,7 @@ class ParserTest < Minitest::Test
     command = parse(<<~RURI).first
       command :expression_cmd do
         interactive
-        el.message("buffer: %s", el.buffer_name(), 42, -1.5, true, false, nil,
+        el.message("buffer: %s", el.buffer_name, 42, -1.5, true, false, nil,
                    :after_save_hook, [1, :two])
       end
     RURI
@@ -259,7 +259,7 @@ class ParserTest < Minitest::Test
     call = parse(<<~RURI).first.body[1]
       command :predicate_cmd do
         interactive
-        el.buffer_live?(el.current_buffer())
+        el.buffer_live?(el.current_buffer)
       end
     RURI
 
@@ -267,13 +267,31 @@ class ParserTest < Minitest::Test
     assert_equal "current-buffer", call.arguments.first.name
   end
 
+  def test_zero_argument_elisp_calls_prefer_bare_ruby_style_but_accept_parentheses
+    bare = parse(<<~RURI).first.body[1]
+      command :bare do
+        interactive
+        el.buffer_name
+      end
+    RURI
+    parenthesized = parse(<<~RURI).first.body[1]
+      command :parenthesized do
+        interactive
+        el.buffer_name()
+      end
+    RURI
+
+    assert_equal bare, parenthesized
+    assert_empty bare.arguments
+  end
+
   def test_parses_block_body_on_elisp_calls
     command = parse(<<~RURI).first
       command :block_form do
         interactive
         el.save_excursion do
-          position = el.point()
-          el.goto_char(el.point_min())
+          position = el.point
+          el.goto_char(el.point_min)
           if position
             el.message("moved")
           end
@@ -409,7 +427,7 @@ end')
     command = parse(<<~RURI).first
       command :describe do
         interactive
-        name = el.buffer_name()
+        name = el.buffer_name
         if name
           el.message("Buffer: %s", name)
         elsif false

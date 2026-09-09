@@ -40,7 +40,7 @@ Generic Emacs functions use the explicit `el` namespace and may be nested:
 ```ruby
 command :describe_buffer do
   interactive
-  el.message("Current buffer: %s", el.buffer_name())
+  el.message("Current buffer: %s", el.buffer_name)
 end
 ```
 
@@ -54,7 +54,7 @@ Commands also support hygienic lexical locals and Ruby conditionals:
 ```ruby
 command :describe_buffer do
   interactive
-  name = el.buffer_name()
+  name = el.buffer_name
   if name
     el.message("Current buffer: %s", name)
   else
@@ -73,7 +73,7 @@ Body-oriented Elisp forms use an ordinary Ruby block:
 command :prepend_marker do
   interactive
   el.save_excursion do
-    el.goto_char(el.point_min())
+    el.goto_char(el.point_min)
     el.insert("START: ")
   end
 end
@@ -99,6 +99,10 @@ end
 Named function values use `function(:identity)`, which emits
 `(function identity)` and can be passed to hooks, timers, key bindings, and
 higher-order Emacs functions.
+
+Zero-argument `el.*` calls use idiomatic Ruby without parentheses, such as
+`el.buffer_name`. The compiler also accepts `el.buffer_name()` for
+compatibility; both forms generate `(buffer-name)`.
 
 Lisp data keeps Ruby arrays as vectors and uses explicit list forms:
 

@@ -176,7 +176,7 @@
       (insert "command :block_cmd do\n"
               "  interactive\n"
               "  el.save_excursion do\n"
-              "    el.goto_char(el.point_min())\n"
+              "    el.goto_char(el.point_min)\n"
               "    el.insert(\"start-\")\n"
               "  end\n"
               "  el.insert(\"-end\")\n"

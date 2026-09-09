@@ -62,7 +62,7 @@ class LowererTest < Minitest::Test
       command :choose do
         interactive
         value = nil
-        if el.buffer_modified_p()
+        if el.buffer_modified_p
           value = "changed"
           el.message("%s", value)
         else
@@ -98,8 +98,8 @@ class LowererTest < Minitest::Test
       command :preserve_point do
         interactive
         result = el.save_excursion do
-          position = el.point()
-          el.goto_char(el.point_min())
+          position = el.point
+          el.goto_char(el.point_min)
           el.insert(el.number_to_string(position))
         end
         el.message("%S", result)
