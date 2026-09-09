@@ -230,4 +230,32 @@ class EmitterTest < Minitest::Test
     assert_includes output, ',(upcase "x")'
     assert_includes output, ",@ruri--local-tail"
   end
+
+  def test_emits_ruby_operators_and_loops
+    output = Ruri.compile(<<~RURI, path: "loops.ruri")
+      command :loops do
+        interactive
+        count = 0
+        while count < 2 && !false
+          count = count + 1
+        end
+        until count >= 3
+          count = count + 1
+        end
+        list(1, 2).each do |item|
+          count = count + item
+        end
+        el.message("%S", count != 6 || false)
+      end
+    RURI
+
+    assert_includes output, "(and"
+    assert_includes output, "(< ruri--local-count 2)"
+    assert_includes output, "(not nil)"
+    assert_includes output, "(while"
+    assert_includes output, "(mapc"
+    assert_includes output, "(lambda (ruri--local-item)"
+    assert_includes output, "(not\n"
+    assert_includes output, "(equal ruri--local-count 6)"
+  end
 end

@@ -223,5 +223,37 @@
       (should (equal "(key . value)|(head \"X\" \"b\" \"c\")"
                      (buffer-string))))))
 
+(ert-deftest ruri-test/operators-and-loops-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri loops " t))
+         (source (expand-file-name "loops.ruri" dir)))
+    (with-temp-file source
+      (insert "command :loop_cmd do\n"
+              "  interactive\n"
+              "  count = 0\n"
+              "  total = 0\n"
+              "  while count < 3 && !(count == 9)\n"
+              "    total = total + count\n"
+              "    count = count + 1\n"
+              "  end\n"
+              "  until count >= 5\n"
+              "    count = count + 1\n"
+              "  end\n"
+              "  list(1, 2, 3).each do |item|\n"
+              "    total = total + item\n"
+              "  end\n"
+              "  safe_and = false && el.error(\"must short-circuit\")\n"
+              "  safe_or = true || el.error(\"must short-circuit\")\n"
+              "  power = 2 ** 3\n"
+              "  math = (power * 3 - 4) / 2 % 5\n"
+              "  signed = -power + +count\n"
+              "  ordered = 2 <= 2 && 3 > 2\n"
+              "  el.insert(el.format(\"%d/%d/%S/%d/%d/%S\", count, total, "
+              "count != total && !false, math, signed, ordered))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (with-temp-buffer
+      (call-interactively #'loop-cmd)
+      (should (equal "5/9/t/0/-3/t" (buffer-string))))))
+
 (provide 'ruri-test)
 ;;; ruri-test.el ends here

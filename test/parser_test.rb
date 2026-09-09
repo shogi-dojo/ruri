@@ -461,6 +461,91 @@ end')
                        negated.condition.arguments.first
   end
 
+  def test_parses_boolean_comparison_and_arithmetic_operators
+    command = parse(<<~RURI).first
+      command :operators do
+        interactive
+        a = 2
+        b = 3
+        add = a + b
+        subtract = a - b
+        multiply = a * b
+        divide = b / a
+        modulo = b % a
+        power = a ** b
+        compare = a < b && a <= b && b > a && b >= a
+        equality = a == b || a != b
+        negate = !equality
+        negative = -a
+        positive = +a
+      end
+    RURI
+
+    operations = command.body.drop(3).map(&:value)
+    assert_equal ["+", "-", "*", "/", "mod", "expt"],
+                 operations.first(6).map(&:name)
+    assert_equal "and", operations[6].name
+    assert_equal "or", operations[7].name
+    assert_equal true, operations[7].arguments.last.negated
+    assert_equal %w[not - identity], operations.last(3).map(&:name)
+  end
+
+  def test_parses_while_until_and_each
+    command = parse(<<~RURI).first
+      command :loops do
+        interactive
+        count = 0
+        while count < 2
+          count = count + 1
+        end
+        until count >= 3
+          count = count + 1
+        end
+        list(1, 2).each do |item|
+          count = count + item
+        end
+      end
+    RURI
+
+    while_loop, until_loop, each = command.body.drop(2)
+    assert_instance_of Ruri::Forms::Loop, while_loop
+    assert_equal false, while_loop.negated
+    assert_instance_of Ruri::Forms::Loop, until_loop
+    assert_equal true, until_loop.negated
+    assert_instance_of Ruri::Forms::Each, each
+    assert_equal "ruri--local-item", each.parameter
+    assert_instance_of Ruri::Forms::ListValue, each.collection
+  end
+
+  def test_each_parameter_does_not_escape_its_block
+    diag = single_diagnostic(<<~RURI)
+      command :loops do
+        interactive
+        list(1).each do |item|
+          item = item + 1
+        end
+        el.message("%S", item)
+      end
+    RURI
+
+    assert_match(/use a Ruri expression or an el\.\* call/, diag.message)
+    assert_equal 6, diag.line
+  end
+
+  def test_each_requires_exactly_one_required_parameter
+    diag = single_diagnostic(<<~RURI)
+      command :loops do
+        interactive
+        list(1).each do
+          el.message("missing")
+        end
+      end
+    RURI
+
+    assert_match(/each requires exactly one block parameter/, diag.message)
+    assert_equal 3, diag.line
+  end
+
   def test_local_scope_covers_the_whole_command_and_nested_blocks
     command = parse(<<~RURI).first
       command :scope do

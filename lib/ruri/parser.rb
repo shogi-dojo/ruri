@@ -11,6 +11,12 @@ module Ruri
   class Parser
     NAME_RE = /\A[a-z][a-z0-9_]*\z/.freeze
     ELISP_CALL_NAME_RE = /\A[a-z][a-z0-9_]*[!?]?\z/.freeze
+    BINARY_OPERATORS = {
+      :+ => "+", :- => "-", :* => "*", :/ => "/", :% => "mod",
+      :** => "expt", :< => "<", :<= => "<=", :> => ">", :>= => ">=",
+      :== => "equal", :!= => "equal"
+    }.freeze
+    UNARY_OPERATORS = { :! => "not", :-@ => "-", :+@ => "identity" }.freeze
 
     class << self
       def parse(source, path:)
@@ -212,8 +218,8 @@ module Ruri
       if node.is_a?(Prism::LocalVariableWriteNode) && !shadowed.include?(node.name.to_s)
         names[node.name.to_s] = true
       end
-      if unqualified_call?(node, :fn) && node.block
-        parameter_names = raw_lambda_parameter_names(node.block)
+      if scoped_block_call?(node)
+        parameter_names = raw_block_parameter_names(node.block)
         node.child_nodes.each do |child|
           child_shadowed = child.equal?(node.block) ? shadowed + parameter_names : shadowed
           collect_local_names(child, names, child_shadowed)
@@ -224,7 +230,12 @@ module Ruri
       names.keys
     end
 
-    def raw_lambda_parameter_names(block)
+    def scoped_block_call?(node)
+      node.is_a?(Prism::CallNode) && node.block &&
+        (unqualified_call?(node, :fn) || node.name == :each)
+    end
+
+    def raw_block_parameter_names(block)
       required = block.parameters&.parameters&.requireds || []
       required.filter_map do |parameter|
         parameter.name.to_s if parameter.respond_to?(:name)
@@ -242,7 +253,8 @@ module Ruri
       interactive_problem_reported = false
       statements.each_with_index do |stmt, index|
         if stmt.is_a?(Prism::LocalVariableWriteNode) ||
-           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode)
+           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
+           stmt.is_a?(Prism::WhileNode) || stmt.is_a?(Prism::UntilNode)
           form = parse_structured_statement(stmt)
           forms << form if form
           next
@@ -253,6 +265,11 @@ module Ruri
         end
         if elisp_call?(stmt)
           form = parse_elisp_call(stmt)
+          forms << form if form
+          next
+        end
+        if stmt.name == :each && stmt.receiver
+          form = parse_each(stmt)
           forms << form if form
           next
         end
@@ -355,6 +372,10 @@ module Ruri
         parse_conditional(node, negated: false)
       when Prism::UnlessNode
         parse_conditional(node, negated: true)
+      when Prism::WhileNode
+        parse_loop(node, negated: false)
+      when Prism::UntilNode
+        parse_loop(node, negated: true)
       else
         unsupported(node)
       end
@@ -406,6 +427,48 @@ module Ruri
         unsupported(clause)
         []
       end
+    end
+
+    def parse_loop(node, negated:)
+      condition = parse_expression(node.predicate)
+      body = parse_buffer_statements(node.statements&.body || [])
+      return nil unless condition
+
+      Forms::Loop.new(condition: condition, body: body, negated: negated)
+    end
+
+    def parse_each(node)
+      if node.arguments
+        error(node.location, "each does not take call arguments")
+        return nil
+      end
+      unless node.block
+        error(node.location, "each requires a block")
+        return nil
+      end
+
+      parameters = parse_required_block_parameters(node.block, "each")
+      return nil unless parameters
+      unless parameters.one?
+        error(node.block.location, "each requires exactly one block parameter")
+        return nil
+      end
+
+      collection = parse_expression(node.receiver)
+      return nil unless collection
+
+      previous_names = @local_names
+      begin
+        @local_names = ((@local_names || []) + parameters).uniq
+        body = parse_buffer_statements(node.block.body&.body || [])
+      ensure
+        @local_names = previous_names
+      end
+      Forms::Each.new(
+        collection: collection,
+        parameter: generated_local_name(parameters.first),
+        body: body
+      )
     end
 
     def parse_elisp_call(node)
@@ -461,6 +524,17 @@ module Ruri
         elements.any?(&:nil?) ? nil : Forms::Vector.new(elements: elements)
       when Prism::LocalVariableReadNode
         parse_local_read(node)
+      when Prism::AndNode
+        parse_logical_operation(node, "and")
+      when Prism::OrNode
+        parse_logical_operation(node, "or")
+      when Prism::ParenthesesNode
+        expressions = node.body&.body || []
+        unless expressions.one?
+          return error(node.location,
+                       "parentheses must contain exactly one expression")
+        end
+        parse_expression(expressions.first)
       when Prism::CallNode
         return parse_lambda(node) if unqualified_call?(node, :fn)
         return parse_function_reference(node) if unqualified_call?(node, :function)
@@ -472,6 +546,7 @@ module Ruri
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
         end
+        return parse_operator(node) if operator_call?(node)
         return parse_elisp_call(node) if elisp_call?(node)
         # Ruby parses a bare name used before its first textual assignment as
         # a zero-argument call. Ruri locals have command-wide lexical scope,
@@ -532,6 +607,10 @@ module Ruri
     end
 
     def parse_lambda_parameters(block)
+      parse_required_block_parameters(block, "fn")
+    end
+
+    def parse_required_block_parameters(block, construct)
       block_parameters = block.parameters
       return [] unless block_parameters
 
@@ -543,7 +622,7 @@ module Ruri
         parameters.keywords.any? || parameters.keyword_rest || parameters.block
       if unsupported_shape || required.any? { |parameter| !parameter.is_a?(Prism::RequiredParameterNode) }
         error(block_parameters.location,
-              "fn supports only required positional block parameters")
+              "#{construct} supports only required positional block parameters")
         return nil
       end
 
@@ -551,10 +630,59 @@ module Ruri
       invalid = names.find { |name| !name.match?(NAME_RE) || name == "t" }
       if invalid
         parameter = required[names.index(invalid)]
-        error(parameter.location, "invalid fn parameter name `#{invalid}`")
+        error(parameter.location, "invalid #{construct} parameter name `#{invalid}`")
         return nil
       end
       names
+    end
+
+    def operator_call?(node)
+      node.receiver && node.call_operator_loc.nil? &&
+        (BINARY_OPERATORS.key?(node.name) || UNARY_OPERATORS.key?(node.name))
+    end
+
+    def parse_operator(node)
+      if node.block
+        error(node.location, "operators do not take blocks")
+        return nil
+      end
+
+      arguments = node.arguments&.arguments || []
+      if BINARY_OPERATORS.key?(node.name)
+        unless arguments.one?
+          error(node.location, "binary operator #{node.name} requires one right operand")
+          return nil
+        end
+        values = [parse_expression(node.receiver), parse_expression(arguments.first)]
+        return nil if values.any?(&:nil?)
+
+        Forms::Operation.new(
+          name: BINARY_OPERATORS.fetch(node.name),
+          arguments: values,
+          negated: node.name == :!=
+        )
+      else
+        unless arguments.empty?
+          error(node.location, "unary operator #{node.name} takes no right operand")
+          return nil
+        end
+        value = parse_expression(node.receiver)
+        return nil unless value
+
+        Forms::Operation.new(
+          name: UNARY_OPERATORS.fetch(node.name),
+          arguments: [value],
+          negated: false
+        )
+      end
+    end
+
+    def parse_logical_operation(node, name)
+      left = parse_expression(node.left)
+      right = parse_expression(node.right)
+      return nil unless left && right
+
+      Forms::Operation.new(name: name, arguments: [left, right], negated: false)
     end
 
     def parse_function_reference(node)
@@ -730,7 +858,8 @@ module Ruri
       forms = []
       statements.each do |stmt|
         if stmt.is_a?(Prism::LocalVariableWriteNode) ||
-           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode)
+           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
+           stmt.is_a?(Prism::WhileNode) || stmt.is_a?(Prism::UntilNode)
           form = parse_structured_statement(stmt)
           forms << form if form
           next
@@ -741,6 +870,11 @@ module Ruri
         end
         if elisp_call?(stmt)
           form = parse_elisp_call(stmt)
+          forms << form if form
+          next
+        end
+        if stmt.name == :each && stmt.receiver
+          form = parse_each(stmt)
           forms << form if form
           next
         end

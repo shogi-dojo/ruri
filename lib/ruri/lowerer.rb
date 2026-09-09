@@ -51,6 +51,12 @@ module Ruri
           collect_expression_locals(statement.condition, names, shadowed)
           collect_locals(statement.then_body, names, shadowed)
           collect_locals(statement.else_body, names, shadowed)
+        when Forms::Loop
+          collect_expression_locals(statement.condition, names, shadowed)
+          collect_locals(statement.body, names, shadowed)
+        when Forms::Each
+          collect_expression_locals(statement.collection, names, shadowed)
+          collect_locals(statement.body, names, shadowed + [statement.parameter])
         when Forms::Call
           collect_expression_locals(statement, names, shadowed)
         end
@@ -80,6 +86,10 @@ module Ruri
         collect_locals(expression.body, names, shadowed + expression.parameters)
       when Forms::QuasiQuote
         collect_template_locals(expression.value, names, shadowed)
+      when Forms::Operation
+        expression.arguments.each do |argument|
+          collect_expression_locals(argument, names, shadowed)
+        end
       end
     end
 
@@ -117,6 +127,18 @@ module Ruri
         )
       when Forms::Conditional
         lower_conditional(statement)
+      when Forms::Loop
+        lower_loop(statement)
+      when Forms::Each
+        Elisp.list(
+          Elisp.symbol("mapc"),
+          Elisp.list(
+            Elisp.symbol("lambda"),
+            Elisp.inline_list(Elisp.symbol(statement.parameter)),
+            *statement.body.map { |child| lower_statement(child) }
+          ),
+          lower_expression(statement.collection)
+        )
       else
         raise ArgumentError, "cannot lower Ruri form: #{statement.class}"
       end
@@ -169,6 +191,12 @@ module Ruri
         Elisp.quote(lower_quoted_data(expression.value))
       when Forms::QuasiQuote
         Elisp.quasiquote(lower_quoted_data(expression.value))
+      when Forms::Operation
+        operation = Elisp.list(
+          Elisp.symbol(expression.name),
+          *expression.arguments.map { |argument| lower_expression(argument) }
+        )
+        expression.negated ? Elisp.list(Elisp.symbol("not"), operation) : operation
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end
@@ -222,6 +250,16 @@ module Ruri
       ]
       items << lower_branch(conditional.else_body) unless conditional.else_body.empty?
       Elisp.list(*items)
+    end
+
+    def lower_loop(loop)
+      condition = lower_expression(loop.condition)
+      condition = Elisp.list(Elisp.symbol("not"), condition) if loop.negated
+      Elisp.list(
+        Elisp.symbol("while"),
+        condition,
+        *loop.body.map { |statement| lower_statement(statement) }
+      )
     end
 
     def lower_branch(statements)

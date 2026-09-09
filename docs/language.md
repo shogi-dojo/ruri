@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.6
+# Ruri language contract — version 0.7
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.6: every construct below is supported,
+is the exact scope of version 0.7: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -42,6 +42,11 @@ everything else is rejected with a source position.
 | `cons(:key, value)` | Constructs one cons cell: `(cons 'key ruri--local-value)`. Exactly two evaluated arguments are required. |
 | `quote(list(:a, :b))` | Emits literal data using reader quote syntax: `'(a b)`. Quoted data accepts literals, arrays, `list`, and `cons`; runtime expressions are rejected. |
 | `quasiquote(list(:a, unquote(value), splice(items)))` | Emits a backquoted template: `` `(a ,value ,@items) ``. `splice` is valid only within a quasiquoted list or vector. |
+| `left && right`, `left \|\| right`, `!value` | Short-circuit boolean operations lowered to `and`, `or`, and `not`. Parentheses may group expressions. |
+| `a == b`, `a != b`, `a < b`, `a <= b`, `a > b`, `a >= b` | Equality uses Elisp `equal`; inequality wraps it in `not`. Ordered comparisons use their corresponding Elisp numeric forms. |
+| `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`, `-a`, `+a` | Arithmetic lowered to `+`, `-`, `*`, `/`, `mod`, `expt`, unary `-`, and `identity`. Operand and division behavior follows Emacs Lisp. |
+| `while condition … end`, `until condition … end` | Repeatedly executes the body. `until` lowers to `while` with a negated condition. |
+| `items.each do \|item\| … end` | Iterates for side effects using `mapc` and a lexical lambda. Exactly one required block parameter is allowed. The collection may be any supported expression. |
 | Comments and whitespace | Accepted according to Ruby syntax (`#` line comments, `=begin`/`=end` block comments); no effect on semantics. |
 
 ## Emacs Lisp calls
@@ -88,6 +93,7 @@ arguments to `el.*` calls.
 | `cons(:key, value)` | `(cons 'key ruri--local-value)` | Evaluated cons cell |
 | `quote(list(:a, :b))` | `'(a b)` | Literal data without evaluation |
 | `quasiquote(list(:a, unquote(value)))` | `` `(a ,ruri--local-value) `` | Data template with evaluated positions |
+| `a + b`, `a == b`, `a && b` | `(+ a b)`, `(equal a b)`, `(and a b)` | Arithmetic, comparison, and short-circuit logic |
 
 Ruby arrays lower to a call to `vector`, rather than bracket syntax, because an
 Emacs vector literal is self-evaluating and would not evaluate nested calls.
@@ -108,13 +114,30 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 - Symbols inside `quote` and `quasiquote` become raw data symbols. Symbols in
   evaluated expressions retain the existing behavior and emit their own quote.
   This prevents nested data from being double quoted.
-- Nested `quote` or `quasiquote` forms are reserved for later work. Version 0.6
+- Nested `quote` or `quasiquote` forms are reserved for later work. Version 0.7
   supports one template level with any number of unquoted or spliced values.
+
+### Operators and loops
+
+- `&&` and `||` preserve left-to-right short-circuit evaluation and return the
+  selected operand according to Elisp `and` and `or` semantics. `!` emits
+  `not`.
+- `==` compares general Elisp values with `equal`; `!=` is its negation.
+  Ordered comparisons and arithmetic use Emacs primitives directly. In
+  particular, `/` follows Emacs integer and floating-point division rules;
+  string concatenation remains `el.concat(...)`.
+- `while` and `until` accept any supported expression as their condition and
+  normal Ruri statements in their body. `break`, `next`, and `redo` are not
+  yet supported.
+- `.each` is the one permitted ordinary explicit receiver form. It is valid as
+  a statement, accepts no call arguments, requires exactly one positional
+  block parameter, and lowers to `mapc`. Its parameter is hygienic and scoped
+  to the block; other command locals are captured and may be mutated.
 
 ### Function values
 
 - `fn` takes no call arguments and requires a block. Its block parameters are
-  Ruby's ordinary `|name, other|` syntax. Version 0.6 accepts required
+  Ruby's ordinary `|name, other|` syntax. Version 0.7 accepts required
   positional parameters only; optional, rest, keyword, and block parameters
   are rejected.
 - Lambda parameters use the same hygienic local-name lowering and shadow a
@@ -156,7 +179,7 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
   and other ASCII control characters (emitted as three-digit octal
   escapes). Non-ASCII UTF-8 characters are written literally and the
   output file is UTF-8.
-- Rejected in v0.6: string interpolation (`#{…}`), heredocs, character
+- Rejected in v0.7: string interpolation (`#{…}`), heredocs, character
   literals, and concatenated or adjacent string forms.
 
 ## Rejected outright
@@ -164,11 +187,12 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 Everything outside the table above, including but not limited to:
 
 - Ruby instance, class, and global variables; constants; destructuring and
-  compound assignments; classes, modules, loops, hashes, ranges, method
-  definitions, and standalone literal statements.
-- Explicit receivers other than the reserved `el` namespace
-  (`Kernel.insert("x")`, `foo.bar`), safe-navigation, operator calls,
-  unqualified arbitrary method calls, `require`, `lambda`/`proc`.
+  compound assignments; classes, modules, hashes, ranges, method definitions,
+  and standalone literal statements.
+- Explicit receivers other than the reserved `el` namespace and supported
+  `.each` iteration (`Kernel.insert("x")`, `foo.bar`), safe-navigation,
+  unsupported operators, unqualified arbitrary method calls, `require`, and
+  `lambda`/`proc`.
 - Block parameters, keyword arguments, splats, default parameters, heredocs,
   and interpolation. `command`, `with_current_buffer`, and `el.*` accept the
   block shapes described above; `insert` does not.
@@ -207,7 +231,8 @@ Generated Lisp (`examples/hello.el`):
 ## Reserved for later versions
 
 User-defined noninteractive functions, optional and rest lambda parameters,
-nested quasiquotation, loops, and a raw Lisp escape hatch remain out of scope.
+nested quasiquotation, loop exits, and a raw Lisp escape hatch remain out of
+scope.
 
 ## Path toward broad Elisp coverage
 
@@ -223,8 +248,9 @@ structure safely:
 2. Nested quasiquotation and richer reader data; v0.6 provides evaluated
    lists and cons cells, literal quote, and single-level quasiquote with
    unquote and splicing.
-3. Ruby boolean, comparison, arithmetic, and loop syntax lowered to explicit
-   Elisp forms.
+3. Broader iteration, loop exits, and assignment operators; v0.7 provides
+   boolean, comparison, arithmetic, `while`, `until`, and side-effecting
+   `.each` syntax.
 4. Command argument lists and interactive specifications.
 5. Error handling, nonlocal exits, declarations, documentation strings, and
    package-level definitions.

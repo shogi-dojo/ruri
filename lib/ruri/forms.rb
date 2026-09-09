@@ -44,6 +44,10 @@ module Ruri
     Unquote = Data.define(:value)
     Splice = Data.define(:value)
 
+    # Ruby operators retain their evaluation shape while using Elisp runtime
+    # semantics. +negated+ represents != without inventing another primitive.
+    Operation = Data.define(:name, :arguments, :negated)
+
     # A hygienically renamed lexical variable assignment and reference.
     LocalWrite = Data.define(:source_name, :name, :value)
     LocalRead = Data.define(:source_name, :name)
@@ -51,5 +55,7 @@ module Ruri
     # Ruby if/unless statement. Unless uses +negated+ so lowering needs only
     # one conditional representation. Branches contain ordinary statements.
     Conditional = Data.define(:condition, :then_body, :else_body, :negated)
+    Loop = Data.define(:condition, :body, :negated)
+    Each = Data.define(:collection, :parameter, :body)
   end
 end

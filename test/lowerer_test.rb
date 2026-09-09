@@ -189,4 +189,39 @@ class LowererTest < Minitest::Test
     assert_instance_of Ruri::Elisp::Unquote, template.value.items[1]
     assert_instance_of Ruri::Elisp::Splice, template.value.items[2]
   end
+
+  def test_lowers_operators_and_loops
+    command = parse(<<~RURI).first
+      command :loops do
+        interactive
+        count = 0
+        while count < 2 && !false
+          count = count + 1
+        end
+        until count >= 3
+          count = count + 1
+        end
+        list(1, 2).each do |item|
+          count = count + item
+        end
+      end
+    RURI
+
+    scope = Ruri::Lowerer.lower([command]).first.items.last
+    while_loop = scope.items[3]
+    assert_equal "while", while_loop.items.first.name
+    assert_equal "and", while_loop.items[1].items.first.name
+    assert_equal "<", while_loop.items[1].items[1].items.first.name
+    assert_equal "not", while_loop.items[1].items[2].items.first.name
+
+    until_loop = scope.items[4]
+    assert_equal "not", until_loop.items[1].items.first.name
+    assert_equal ">=", until_loop.items[1].items[1].items.first.name
+
+    each = scope.items[5]
+    assert_equal "mapc", each.items.first.name
+    assert_equal "lambda", each.items[1].items.first.name
+    assert_equal ["ruri--local-item"], each.items[1].items[1].items.map(&:name)
+    assert_equal "list", each.items[2].items.first.name
+  end
 end
