@@ -36,4 +36,24 @@ class LowererTest < Minitest::Test
 
     assert_includes error.message, "cannot lower Ruri form"
   end
+
+  def test_lowers_calls_and_every_expression_literal
+    command = parse(<<~RURI).first
+      command :types do
+        interactive
+        el.message("%S", 1, 2.5, true, false, nil, :hello_world, [1, :two])
+      end
+    RURI
+
+    call = Ruri::Lowerer.lower([command]).first.items.last
+
+    assert_equal "message", call.items.first.name
+    assert_instance_of Ruri::Elisp::String, call.items[1]
+    assert_instance_of Ruri::Elisp::Integer, call.items[2]
+    assert_instance_of Ruri::Elisp::Float, call.items[3]
+    assert_equal %w[t nil nil], call.items.values_at(4, 5, 6).map(&:name)
+    assert_equal "hello-world", call.items[7].value.name
+    assert_instance_of Ruri::Elisp::List, call.items[8]
+    assert_equal "vector", call.items[8].items.first.name
+  end
 end

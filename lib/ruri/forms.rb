@@ -2,9 +2,8 @@
 
 module Ruri
   # Validated internal representation of a .ruri source file. The parser
-  # produces these from the Prism AST; the emitter is the only component
-  # that turns them into text, so string values can never leak into the
-  # output as Lisp structure.
+  # produces these from the Prism AST; the lowerer converts them to generic
+  # Elisp nodes, so source values never become output structure directly.
   module Forms
     # Top-level command definition.
     # +source_name+ is the symbol as written; +name+ is the Emacs Lisp
@@ -19,5 +18,16 @@ module Ruri
 
     # Insert text at point in the current buffer.
     Insert = Data.define(:text)
+
+    # An explicit call through the `el' namespace. Arguments are expression
+    # forms and +name+ is already normalized from snake_case to kebab-case.
+    Call = Data.define(:name, :arguments)
+
+    # Scalar expression value. Supported kinds are :string, :integer, :float,
+    # :true, :false, :nil, and :symbol.
+    Literal = Data.define(:kind, :value)
+
+    # Ruby array syntax denotes an Emacs Lisp vector value.
+    Vector = Data.define(:elements)
   end
 end

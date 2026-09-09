@@ -102,6 +102,83 @@ class ParserTest < Minitest::Test
     assert_equal "no\\nescapes", commands.first.body[1].text
   end
 
+  def test_parses_nested_elisp_calls_and_expression_literals
+    command = parse(<<~RURI).first
+      command :expression_cmd do
+        interactive
+        el.message("buffer: %s", el.buffer_name(), 42, -1.5, true, false, nil,
+                   :after_save_hook, [1, :two])
+      end
+    RURI
+
+    call = command.body[1]
+    assert_instance_of Ruri::Forms::Call, call
+    assert_equal "message", call.name
+    assert_equal %i[string integer float true false nil symbol],
+                 call.arguments.values_at(0, 2, 3, 4, 5, 6, 7).map(&:kind)
+    assert_equal "buffer-name", call.arguments[1].name
+    assert_equal "after-save-hook", call.arguments[7].value
+    assert_equal %i[integer symbol], call.arguments[8].elements.map(&:kind)
+  end
+
+  def test_normalizes_predicate_function_names
+    call = parse(<<~RURI).first.body[1]
+      command :predicate_cmd do
+        interactive
+        el.buffer_live?(el.current_buffer())
+      end
+    RURI
+
+    assert_equal "buffer-live?", call.name
+    assert_equal "current-buffer", call.arguments.first.name
+  end
+
+  def test_rejects_blocks_on_elisp_calls
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        el.message("x") do
+          el.message("y")
+        end
+      end
+    RURI
+
+    assert_match(/el\.\* calls do not take blocks/, diag.message)
+  end
+
+  def test_rejects_unqualified_calls_inside_elisp_arguments
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        el.message(buffer_name())
+      end
+    RURI
+
+    assert_match(/only el\.\* calls and literals are allowed/, diag.message)
+  end
+
+  def test_rejects_keyword_arguments
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        el.message(value: 1)
+      end
+    RURI
+
+    assert_match(/unsupported expression: KeywordHashNode/, diag.message)
+  end
+
+  def test_rejects_safe_navigation_on_elisp_namespace
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        el&.message("x")
+      end
+    RURI
+
+    assert_match(/explicit receiver/, diag.message)
+  end
+
   def test_reports_syntax_errors_with_one_based_positions
     diags = diagnostics_of("command :a do\n  interactive\n")
 

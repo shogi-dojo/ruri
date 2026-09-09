@@ -47,24 +47,50 @@ module Ruri
 
       def render(node, indent)
         padding = "  " * indent
-        return ["#{padding}#{render_inline(node)}"] unless node.is_a?(List)
-        return ["#{padding}()"] if node.items.empty?
+        return render_collection(node.items, indent, "(", ")") if node.is_a?(List)
+        return render_collection(node.items, indent, "[", "]") if node.is_a?(Vector)
 
-        if node.items.all? { |item| inline?(item) }
-          return ["#{padding}(#{node.items.map { |item| render_inline(item) }.join(" ")})"]
+        ["#{padding}#{render_inline(node)}"]
+      end
+
+      def render_collection(items, indent, opening, closing)
+        padding = "  " * indent
+        return ["#{padding}#{opening}#{closing}"] if items.empty?
+
+        if items.all? { |item| inline?(item) }
+          values = items.map { |item| render_inline(item) }.join(" ")
+          return ["#{padding}#{opening}#{values}#{closing}"]
         end
 
-        leading_count = node.items.index { |item| !inline?(item) } || node.items.length
-        leading = node.items.take(leading_count)
-        nested = node.items.drop(leading_count)
-        lines = ["#{padding}(#{leading.map { |item| render_inline(item) }.join(" ")}"]
-        nested.each { |item| lines.concat(render(item, indent + 1)) }
-        lines[-1] += ")"
+        leading_count = items.index { |item| !inline?(item) } || items.length
+        leading = items.take(leading_count)
+        nested = items.drop(leading_count)
+        lines = ["#{padding}#{opening}#{leading.map { |item| render_inline(item) }.join(" ")}"]
+        nested.chunk { |item| inline?(item) }.each do |is_inline, chunk|
+          if is_inline
+            values = chunk.map { |item| render_inline(item) }.join(" ")
+            lines << "#{"  " * (indent + 1)}#{values}"
+          else
+            chunk.each { |item| lines.concat(render(item, indent + 1)) }
+          end
+        end
+        lines[-1] += closing
         lines
       end
 
       def inline?(node)
-        node.is_a?(Symbol) || node.is_a?(String) || (node.is_a?(List) && node.items.empty?)
+        case node
+        when Symbol, String, Integer, Float
+          true
+        when Quote
+          inline?(node.value)
+        when Vector
+          node.items.all? { |item| inline?(item) }
+        when List
+          node.items.empty?
+        else
+          false
+        end
       end
 
       def render_inline(node)
@@ -73,6 +99,14 @@ module Ruri
           node.name
         when String
           self.class.quote(node.value)
+        when Integer, Float
+          node.value.to_s
+        when Quote
+          "'#{render_inline(node.value)}"
+        when Vector
+          return "[#{node.items.map { |item| render_inline(item) }.join(" ")}]" if inline?(node)
+
+          raise ArgumentError, "nested vector cannot be rendered inline"
         when List
           return "()" if node.items.empty?
 

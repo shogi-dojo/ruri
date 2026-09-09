@@ -1,9 +1,9 @@
-# Ruri language contract — version 0
+# Ruri language contract — version 0.2
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0: every construct below is supported,
+is the exact scope of version 0.2: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -31,7 +31,39 @@ everything else is rejected with a source position.
 | `interactive` | Emits `(interactive)`. Exactly once and first in each command body; no arguments, no block. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
+| `el.message("value: %s", el.buffer_name())` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Blocks and keyword arguments are rejected. |
 | Comments and whitespace | Accepted according to Ruby syntax (`#` line comments, `=begin`/`=end` block comments); no effect on semantics. |
+
+## Emacs Lisp calls
+
+- Only calls with the literal receiver `el` enter the generic call path.
+  `el.message("hello")` emits `(message "hello")`; ordinary Ruby-shaped calls
+  such as `message("hello")` and other receivers remain compile errors.
+- Function names must use lowercase Ruby method syntax. Underscores become
+  hyphens, while a trailing `?` or `!` is preserved: `el.buffer_live?` emits
+  `buffer-live?`.
+- Positional arguments may contain any supported expression, including another
+  `el.*` call. Generic calls do not accept blocks, keyword arguments, splats,
+  safe navigation, or assignment methods.
+- Ruri does not keep an Emacs function catalogue or enforce arity. The Emacs
+  byte compiler and runtime report unknown functions and invalid arguments.
+
+## Expressions
+
+Expressions are currently allowed only as arguments to `el.*` calls.
+
+| Ruby expression | Emacs Lisp output | Meaning |
+| --- | --- | --- |
+| `"text"`, `'text'` | `"text"` | Ruby-decoded UTF-8 string |
+| `42`, `-7` | `42`, `-7` | Integer |
+| `1.5`, `-0.25` | `1.5`, `-0.25` | Finite float |
+| `true` | `t` | True |
+| `false`, `nil` | `nil` | Emacs has one false/empty-list value, so these intentionally collapse |
+| `:after_save_hook` | `'after-save-hook` | Quoted Elisp symbol; underscores become hyphens |
+| `[1, :two, el.point()]` | `(vector 1 'two (point))` | Vector whose elements are evaluated in order |
+
+Ruby arrays lower to a call to `vector`, rather than bracket syntax, because an
+Emacs vector literal is self-evaluating and would not evaluate nested calls.
 
 ## Names
 
@@ -54,17 +86,18 @@ everything else is rejected with a source position.
   and other ASCII control characters (emitted as three-digit octal
   escapes). Non-ASCII UTF-8 characters are written literally and the
   output file is UTF-8.
-- Rejected in v0: string interpolation (`#{…}`), heredocs, character
+- Rejected in v0.2: string interpolation (`#{…}`), heredocs, character
   literals, and concatenated or adjacent string forms.
 
 ## Rejected outright
 
 Everything outside the table above, including but not limited to:
 
-- Ruby variables, assignments, classes, modules, conditionals, loops,
-  arrays, hashes, ranges, booleans/`nil` literals, numbers as statements.
-- Explicit receivers (`Kernel.insert("x")`, `foo.bar`), safe-navigation,
-  operator calls, arbitrary method calls, `require`, `lambda`/`proc`.
+- Ruby variables, assignments, classes, modules, conditionals, loops, hashes,
+  ranges, and standalone literal statements.
+- Explicit receivers other than the reserved `el` namespace
+  (`Kernel.insert("x")`, `foo.bar`), safe-navigation, operator calls,
+  unqualified arbitrary method calls, `require`, `lambda`/`proc`.
 - Block or keyword arguments on any supported construct, splats,
   default parameters, heredocs, interpolation.
 - Executable top-level expressions: a `.ruri` file may contain only
@@ -101,6 +134,5 @@ Generated Lisp (`examples/hello.el`):
 
 ## Reserved for later versions
 
-Generic function calls, local variables, closures, additional macros,
-and a broader expression language are explicitly out of scope until the
-hello-world vertical slice works end to end.
+Local variables, conditionals, closures, block-taking generic calls,
+additional macros, and a raw Lisp escape hatch remain out of scope.

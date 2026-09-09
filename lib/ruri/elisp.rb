@@ -9,7 +9,11 @@ module Ruri
 
     Symbol = Data.define(:name)
     String = Data.define(:value)
+    Integer = Data.define(:value)
+    Float = Data.define(:value)
     List = Data.define(:items)
+    Vector = Data.define(:items)
+    Quote = Data.define(:value)
 
     module_function
 
@@ -26,17 +30,45 @@ module Ruri
       String.new(value: value.to_s.freeze)
     end
 
-    def list(*items)
-      invalid = items.reject { |item| node?(item) }
-      unless invalid.empty?
-        raise ArgumentError, "Emacs Lisp lists may contain only Elisp nodes"
+    def integer(value)
+      raise ArgumentError, "expected an Integer" unless value.is_a?(::Integer)
+
+      Integer.new(value: value)
+    end
+
+    def float(value)
+      unless value.is_a?(::Float) && value.finite?
+        raise ArgumentError, "expected a finite Float"
       end
 
+      Float.new(value: value)
+    end
+
+    def list(*items)
+      validate_items!(items, "lists")
       List.new(items: items.freeze)
     end
 
-    def node?(value)
-      value.is_a?(Symbol) || value.is_a?(String) || value.is_a?(List)
+    def vector(*items)
+      validate_items!(items, "vectors")
+      Vector.new(items: items.freeze)
     end
+
+    def quote(value)
+      raise ArgumentError, "quoted values must be Elisp nodes" unless node?(value)
+
+      Quote.new(value: value)
+    end
+
+    def node?(value)
+      [Symbol, String, Integer, Float, List, Vector, Quote].any? { |type| value.is_a?(type) }
+    end
+
+    def validate_items!(items, collection)
+      return if items.all? { |item| node?(item) }
+
+      raise ArgumentError, "Emacs Lisp #{collection} may contain only Elisp nodes"
+    end
+    private_class_method :validate_items!
   end
 end

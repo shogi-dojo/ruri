@@ -135,4 +135,21 @@ class EmitterTest < Minitest::Test
     assert_equal 1, output.lines.count { |line| line.include?("injected") }
     refute output.lines.any? { |line| line.start_with?("(error") }
   end
+
+  def test_emits_generic_elisp_calls_and_literals
+    output = Ruri.compile(<<~RURI, path: "expressions.ruri")
+      command :expression_cmd do
+        interactive
+        el.message("buffer: %s", el.buffer_name(), 42, 1.5, true, false, nil,
+                   :after_save_hook, [1, :x])
+      end
+    RURI
+
+    assert_includes output, <<~ELISP.chomp
+      (message "buffer: %s"
+          (buffer-name)
+          42 1.5 t nil nil 'after-save-hook
+          (vector 1 'x))
+    ELISP
+  end
 end

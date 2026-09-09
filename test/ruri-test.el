@@ -130,5 +130,19 @@
                            (buffer-string)))))
             (delete-file elc)))))))
 
+(ert-deftest ruri-test/generic-calls-and-literals-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri expressions " t))
+         (source (expand-file-name "expressions.ruri" dir)))
+    (with-temp-file source
+      (insert "command :expression_cmd do\n"
+              "  interactive\n"
+              "  el.insert(el.format(\"%s/%s/%s %S\", true, false, nil, "
+              "[1, 2.5, :hello_world]))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (with-temp-buffer
+      (call-interactively #'expression-cmd)
+      (should (equal "t/nil/nil [1 2.5 hello-world]" (buffer-string))))))
+
 (provide 'ruri-test)
 ;;; ruri-test.el ends here

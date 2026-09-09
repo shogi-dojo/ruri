@@ -10,6 +10,7 @@ module Ruri
   #   # => [<Forms::Command ...>]  or raises Ruri::CompileError
   class Parser
     NAME_RE = /\A[a-z][a-z0-9_]*\z/.freeze
+    ELISP_CALL_NAME_RE = /\A[a-z][a-z0-9_]*[!?]?\z/.freeze
 
     class << self
       def parse(source, path:)
@@ -131,6 +132,25 @@ module Ruri
       block.parameters&.location
     end
 
+    def el_namespace?(node)
+      node.is_a?(Prism::CallNode) &&
+        node.name == :el &&
+        node.receiver.nil? &&
+        node.arguments.nil? &&
+        node.block.nil? &&
+        node.opening_loc.nil?
+    end
+
+    def elisp_call?(node)
+      node.is_a?(Prism::CallNode) &&
+        node.call_operator == "." &&
+        el_namespace?(node.receiver)
+    end
+
+    def normalize_elisp_name(name)
+      name.to_s.tr("_", "-")
+    end
+
     def parse_top_level(node)
       unless node.is_a?(Prism::CallNode) && node.name == :command
         unsupported(node)
@@ -182,6 +202,11 @@ module Ruri
       statements.each_with_index do |stmt, index|
         unless stmt.is_a?(Prism::CallNode)
           unsupported(stmt)
+          next
+        end
+        if elisp_call?(stmt)
+          form = parse_elisp_call(stmt)
+          forms << form if form
           next
         end
         case stmt.name
@@ -275,6 +300,72 @@ module Ruri
       Forms::Insert.new(text: text)
     end
 
+    def parse_elisp_call(node)
+      if node.block
+        error(node.location, "el.* calls do not take blocks")
+        return nil
+      end
+
+      source_name = node.name.to_s
+      unless source_name.match?(ELISP_CALL_NAME_RE)
+        error(node.message_loc || node.location,
+              "invalid el.* function name `#{source_name}`; use lowercase snake_case")
+        return nil
+      end
+
+      arguments = node.arguments&.arguments || []
+      parsed_arguments = arguments.map { |argument| parse_expression(argument) }
+      return nil if parsed_arguments.any?(&:nil?)
+
+      Forms::Call.new(
+        name: normalize_elisp_name(source_name),
+        arguments: parsed_arguments
+      )
+    end
+
+    def parse_expression(node)
+      case node
+      when Prism::StringNode, Prism::InterpolatedStringNode
+        ok, value = extract_string(node)
+        ok ? Forms::Literal.new(kind: :string, value: value) : nil
+      when Prism::IntegerNode
+        Forms::Literal.new(kind: :integer, value: node.value)
+      when Prism::FloatNode
+        Forms::Literal.new(kind: :float, value: node.value)
+      when Prism::TrueNode
+        Forms::Literal.new(kind: :true, value: true)
+      when Prism::FalseNode
+        Forms::Literal.new(kind: :false, value: false)
+      when Prism::NilNode
+        Forms::Literal.new(kind: :nil, value: nil)
+      when Prism::SymbolNode, Prism::InterpolatedSymbolNode
+        parse_symbol_expression(node)
+      when Prism::ArrayNode
+        elements = node.elements.map { |element| parse_expression(element) }
+        elements.any?(&:nil?) ? nil : Forms::Vector.new(elements: elements)
+      when Prism::CallNode
+        return parse_elisp_call(node) if elisp_call?(node)
+
+        error(node.location, "unsupported expression: only el.* calls and literals are allowed")
+      else
+        error(node.location,
+              "unsupported expression: #{node.class.name.delete_prefix("Prism::")}")
+      end
+    end
+
+    def parse_symbol_expression(node)
+      ok, value = extract_symbol(node)
+      return nil unless ok
+
+      normalized = normalize_elisp_name(value)
+      unless normalized.match?(Elisp::SYMBOL_RE)
+        error(node.location, "invalid Emacs Lisp symbol literal `#{value}`")
+        return nil
+      end
+
+      Forms::Literal.new(kind: :symbol, value: normalized)
+    end
+
     # Statements inside a with_current_buffer block: only nested buffer
     # blocks and insert are valid here; interactive belongs to the command
     # body alone.
@@ -283,6 +374,11 @@ module Ruri
       statements.each do |stmt|
         unless stmt.is_a?(Prism::CallNode)
           unsupported(stmt)
+          next
+        end
+        if elisp_call?(stmt)
+          form = parse_elisp_call(stmt)
+          forms << form if form
           next
         end
         case stmt.name
