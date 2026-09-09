@@ -193,4 +193,23 @@ class EmitterTest < Minitest::Test
     assert_includes output, "(setq ruri--local-position"
     assert_includes output, "(goto-char"
   end
+
+  def test_emits_lambdas_and_named_function_values
+    output = Ruri.compile(<<~RURI, path: "callbacks.ruri")
+      command :callbacks do
+        interactive
+        prefix = "<"
+        callback = fn do |value|
+          el.concat(prefix, value, ">")
+        end
+        el.mapcar(callback, ["a", "b"])
+        el.add_hook(:after_save_hook, function(:callbacks))
+      end
+    RURI
+
+    assert_includes output, "(lambda (ruri--local-value)"
+    assert_includes output,
+                    '(concat ruri--local-prefix ruri--local-value ">")'
+    assert_includes output, "(function callbacks)"
+  end
 end

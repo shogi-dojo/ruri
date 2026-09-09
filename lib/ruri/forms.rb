@@ -31,6 +31,11 @@ module Ruri
     # Ruby array syntax denotes an Emacs Lisp vector value.
     Vector = Data.define(:elements)
 
+    # First-class function values. Lambda parameters are hygienic Elisp names;
+    # a named reference lowers to (function NAME) without quoting NAME as data.
+    Lambda = Data.define(:parameters, :body)
+    FunctionReference = Data.define(:source_name, :name)
+
     # A hygienically renamed lexical variable assignment and reference.
     LocalWrite = Data.define(:source_name, :name, :value)
     LocalRead = Data.define(:source_name, :name)

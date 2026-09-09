@@ -37,32 +37,40 @@ module Ruri
       )
     end
 
-    def collect_locals(statements, names = [])
+    def collect_locals(statements, names = [], shadowed = [])
       statements.each do |statement|
         case statement
         when Forms::LocalWrite
-          names << statement.name unless names.include?(statement.name)
-          collect_expression_locals(statement.value, names)
+          unless shadowed.include?(statement.name) || names.include?(statement.name)
+            names << statement.name
+          end
+          collect_expression_locals(statement.value, names, shadowed)
         when Forms::WithCurrentBuffer
-          collect_locals(statement.body, names)
+          collect_locals(statement.body, names, shadowed)
         when Forms::Conditional
-          collect_expression_locals(statement.condition, names)
-          collect_locals(statement.then_body, names)
-          collect_locals(statement.else_body, names)
+          collect_expression_locals(statement.condition, names, shadowed)
+          collect_locals(statement.then_body, names, shadowed)
+          collect_locals(statement.else_body, names, shadowed)
         when Forms::Call
-          collect_expression_locals(statement, names)
+          collect_expression_locals(statement, names, shadowed)
         end
       end
       names
     end
 
-    def collect_expression_locals(expression, names)
+    def collect_expression_locals(expression, names, shadowed)
       case expression
       when Forms::Call
-        expression.arguments.each { |argument| collect_expression_locals(argument, names) }
-        collect_locals(expression.body, names)
+        expression.arguments.each do |argument|
+          collect_expression_locals(argument, names, shadowed)
+        end
+        collect_locals(expression.body, names, shadowed)
       when Forms::Vector
-        expression.elements.each { |element| collect_expression_locals(element, names) }
+        expression.elements.each do |element|
+          collect_expression_locals(element, names, shadowed)
+        end
+      when Forms::Lambda
+        collect_locals(expression.body, names, shadowed + expression.parameters)
       end
     end
 
@@ -114,6 +122,17 @@ module Ruri
         lower_literal(expression)
       when Forms::LocalRead
         Elisp.symbol(expression.name)
+      when Forms::Lambda
+        Elisp.list(
+          Elisp.symbol("lambda"),
+          Elisp.inline_list(*expression.parameters.map { |name| Elisp.symbol(name) }),
+          *expression.body.map { |statement| lower_statement(statement) }
+        )
+      when Forms::FunctionReference
+        Elisp.list(
+          Elisp.symbol("function"),
+          Elisp.symbol(expression.name)
+        )
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end

@@ -118,4 +118,46 @@ class LowererTest < Minitest::Test
     assert_equal "goto-char", block_form.items[2].items.first.name
     assert_equal "insert", block_form.items[3].items.first.name
   end
+
+  def test_lowers_lambdas_and_function_references
+    command = parse(<<~RURI).first
+      command :callbacks do
+        interactive
+        prefix = "<"
+        callback = fn do |value|
+          el.concat(prefix, value, ">")
+        end
+        el.add_hook(:after_save_hook, function(:callbacks))
+      end
+    RURI
+
+    scope = Ruri::Lowerer.lower([command]).first.items.last
+    lambda = scope.items[3].items[2]
+    assert_equal "lambda", lambda.items.first.name
+    assert_equal ["ruri--local-value"], lambda.items[1].items.map(&:name)
+    assert_equal "concat", lambda.items[2].items.first.name
+    assert_equal "ruri--local-prefix", lambda.items[2].items[1].name
+
+    reference = scope.items[4].items.last
+    assert_equal %w[function callbacks], reference.items.map(&:name)
+  end
+
+  def test_lambda_parameter_assignment_does_not_create_a_command_local
+    command = parse(<<~RURI).first
+      command :callback do
+        interactive
+        callback = fn do |value|
+          value = "changed"
+          el.identity(value)
+        end
+        el.funcall(callback, "original")
+      end
+    RURI
+
+    scope = Ruri::Lowerer.lower([command]).first.items.last
+    assert_equal ["ruri--local-callback"], scope.items[1].items.map(&:name)
+    lambda = scope.items[2].items[2]
+    assert_equal "setq", lambda.items[2].items.first.name
+    assert_equal "ruri--local-value", lambda.items[2].items[1].name
+  end
 end

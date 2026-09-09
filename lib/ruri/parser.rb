@@ -147,6 +147,10 @@ module Ruri
         el_namespace?(node.receiver)
     end
 
+    def unqualified_call?(node, name)
+      node.is_a?(Prism::CallNode) && node.name == name && node.receiver.nil?
+    end
+
     def normalize_elisp_name(name)
       name.to_s.tr("_", "-")
     end
@@ -202,14 +206,29 @@ module Ruri
       @local_names = previous_names
     end
 
-    def collect_local_names(node, names = {})
+    def collect_local_names(node, names = {}, shadowed = [])
       return names.keys unless node
 
-      if node.is_a?(Prism::LocalVariableWriteNode)
+      if node.is_a?(Prism::LocalVariableWriteNode) && !shadowed.include?(node.name.to_s)
         names[node.name.to_s] = true
       end
-      node.child_nodes.each { |child| collect_local_names(child, names) }
+      if unqualified_call?(node, :fn) && node.block
+        parameter_names = raw_lambda_parameter_names(node.block)
+        node.child_nodes.each do |child|
+          child_shadowed = child.equal?(node.block) ? shadowed + parameter_names : shadowed
+          collect_local_names(child, names, child_shadowed)
+        end
+      else
+        node.child_nodes.each { |child| collect_local_names(child, names, shadowed) }
+      end
       names.keys
+    end
+
+    def raw_lambda_parameter_names(block)
+      required = block.parameters&.parameters&.requireds || []
+      required.filter_map do |parameter|
+        parameter.name.to_s if parameter.respond_to?(:name)
+      end
     end
 
     def generated_local_name(source_name)
@@ -443,6 +462,8 @@ module Ruri
       when Prism::LocalVariableReadNode
         parse_local_read(node)
       when Prism::CallNode
+        return parse_lambda(node) if unqualified_call?(node, :fn)
+        return parse_function_reference(node) if unqualified_call?(node, :function)
         return parse_elisp_call(node) if elisp_call?(node)
         # Ruby parses a bare name used before its first textual assignment as
         # a zero-argument call. Ruri locals have command-wide lexical scope,
@@ -474,6 +495,83 @@ module Ruri
       @local_names&.include?(node.name.to_s) &&
         node.receiver.nil? && node.arguments.nil? && node.block.nil? &&
         node.opening_loc.nil?
+    end
+
+    def parse_lambda(node)
+      if node.arguments
+        error(node.location, "fn takes no arguments; use block parameters")
+        return nil
+      end
+      unless node.block
+        error(node.location, "fn requires a do...end or {...} block")
+        return nil
+      end
+
+      parameters = parse_lambda_parameters(node.block)
+      return nil unless parameters
+
+      previous_names = @local_names
+      begin
+        @local_names = ((@local_names || []) + parameters).uniq
+        body = parse_buffer_statements(node.block.body&.body || [])
+      ensure
+        @local_names = previous_names
+      end
+      Forms::Lambda.new(
+        parameters: parameters.map { |name| generated_local_name(name) },
+        body: body
+      )
+    end
+
+    def parse_lambda_parameters(block)
+      block_parameters = block.parameters
+      return [] unless block_parameters
+
+      parameters = block_parameters.parameters
+      required = parameters&.requireds || []
+      unsupported_shape =
+        block_parameters.locals.any? || parameters.nil? ||
+        parameters.optionals.any? || parameters.rest || parameters.posts.any? ||
+        parameters.keywords.any? || parameters.keyword_rest || parameters.block
+      if unsupported_shape || required.any? { |parameter| !parameter.is_a?(Prism::RequiredParameterNode) }
+        error(block_parameters.location,
+              "fn supports only required positional block parameters")
+        return nil
+      end
+
+      names = required.map { |parameter| parameter.name.to_s }
+      invalid = names.find { |name| !name.match?(NAME_RE) || name == "t" }
+      if invalid
+        parameter = required[names.index(invalid)]
+        error(parameter.location, "invalid fn parameter name `#{invalid}`")
+        return nil
+      end
+      names
+    end
+
+    def parse_function_reference(node)
+      if node.block
+        error(node.location, "function does not take a block")
+        return nil
+      end
+
+      arguments = node.arguments&.arguments || []
+      unless arguments.one? &&
+             (arguments.first.is_a?(Prism::SymbolNode) ||
+              arguments.first.is_a?(Prism::InterpolatedSymbolNode))
+        error(node.location, "function requires exactly one literal symbol argument")
+        return nil
+      end
+
+      ok, source_name = extract_symbol(arguments.first)
+      return nil unless ok
+
+      name = normalize_elisp_name(source_name)
+      unless name.match?(Elisp::SYMBOL_RE)
+        error(arguments.first.location, "invalid Emacs Lisp function name `#{source_name}`")
+        return nil
+      end
+      Forms::FunctionReference.new(source_name: source_name, name: name)
     end
 
     def parse_symbol_expression(node)

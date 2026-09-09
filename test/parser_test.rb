@@ -121,6 +121,71 @@ class ParserTest < Minitest::Test
     assert_equal %i[integer symbol], call.arguments[8].elements.map(&:kind)
   end
 
+  def test_parses_lambdas_captures_and_function_references
+    command = parse(<<~RURI).first
+      command :callbacks do
+        interactive
+        prefix = "<"
+        callback = fn do |value, index|
+          el.message("%s%s:%s", prefix, value, index)
+        end
+        el.add_hook(:after_save_hook, function(:callbacks))
+      end
+    RURI
+
+    lambda = command.body[2].value
+    assert_instance_of Ruri::Forms::Lambda, lambda
+    assert_equal %w[ruri--local-value ruri--local-index], lambda.parameters
+    assert_equal "ruri--local-prefix", lambda.body.first.arguments[1].name
+    assert_equal "ruri--local-value", lambda.body.first.arguments[2].name
+
+    reference = command.body[3].arguments.last
+    assert_instance_of Ruri::Forms::FunctionReference, reference
+    assert_equal "callbacks", reference.name
+  end
+
+  def test_lambda_parameters_do_not_escape_the_lambda
+    diag = single_diagnostic(<<~RURI)
+      command :callbacks do
+        interactive
+        callback = fn do |value|
+          value = "inside"
+          el.identity(value)
+        end
+        el.message("%S", value)
+      end
+    RURI
+
+    assert_match(/only locals, el\.\* calls, and literals are allowed/, diag.message)
+    assert_equal 7, diag.line
+  end
+
+  def test_rejects_unsupported_lambda_parameters
+    diag = single_diagnostic(<<~RURI)
+      command :callbacks do
+        interactive
+        callback = fn do |value = nil|
+          el.identity(value)
+        end
+      end
+    RURI
+
+    assert_match(/fn supports only required positional block parameters/, diag.message)
+    assert_equal 3, diag.line
+  end
+
+  def test_rejects_invalid_function_reference
+    diag = single_diagnostic(<<~RURI)
+      command :callbacks do
+        interactive
+        el.add_hook(:after_save_hook, function("callbacks"))
+      end
+    RURI
+
+    assert_match(/function requires exactly one literal symbol argument/, diag.message)
+    assert_equal 3, diag.line
+  end
+
   def test_normalizes_predicate_function_names
     call = parse(<<~RURI).first.body[1]
       command :predicate_cmd do

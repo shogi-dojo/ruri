@@ -187,5 +187,23 @@
       (call-interactively #'block-cmd)
       (should (equal "start-body-end" (buffer-string))))))
 
+(ert-deftest ruri-test/lambdas-captures-and-function-references-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri callbacks " t))
+         (source (expand-file-name "callbacks.ruri" dir)))
+    (with-temp-file source
+      (insert "command :callback_cmd do\n"
+              "  interactive\n"
+              "  prefix = \"<\"\n"
+              "  formatter = fn do |value|\n"
+              "    el.concat(prefix, value, \">\")\n"
+              "  end\n"
+              "  el.insert(el.mapconcat(formatter, [\"a\", \"b\"], \",\"))\n"
+              "  el.insert(el.funcall(function(:identity), \"!\"))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (with-temp-buffer
+      (call-interactively #'callback-cmd)
+      (should (equal "<a>,<b>!" (buffer-string))))))
+
 (provide 'ruri-test)
 ;;; ruri-test.el ends here
