@@ -464,6 +464,14 @@ module Ruri
       when Prism::CallNode
         return parse_lambda(node) if unqualified_call?(node, :fn)
         return parse_function_reference(node) if unqualified_call?(node, :function)
+        return parse_list_value(node) if unqualified_call?(node, :list)
+        return parse_cons_value(node) if unqualified_call?(node, :cons)
+        return parse_quote(node) if unqualified_call?(node, :quote)
+        return parse_quasiquote(node) if unqualified_call?(node, :quasiquote)
+        if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
+          return error(node.location,
+                       "#{node.name} is only allowed inside quasiquote")
+        end
         return parse_elisp_call(node) if elisp_call?(node)
         # Ruby parses a bare name used before its first textual assignment as
         # a zero-argument call. Ruri locals have command-wide lexical scope,
@@ -471,7 +479,7 @@ module Ruri
         return parse_local_read(node) if local_reference_call?(node)
 
         error(node.location,
-              "unsupported expression: only locals, el.* calls, and literals are allowed")
+              "unsupported expression: use a Ruri expression or an el.* call")
       else
         error(node.location,
               "unsupported expression: #{node.class.name.delete_prefix("Prism::")}")
@@ -574,6 +582,135 @@ module Ruri
       Forms::FunctionReference.new(source_name: source_name, name: name)
     end
 
+    def parse_list_value(node)
+      return nil unless reject_expression_block(node, "list")
+
+      elements = (node.arguments&.arguments || []).map { |item| parse_expression(item) }
+      elements.any?(&:nil?) ? nil : Forms::ListValue.new(elements: elements)
+    end
+
+    def parse_cons_value(node)
+      return nil unless reject_expression_block(node, "cons")
+
+      arguments = node.arguments&.arguments || []
+      unless arguments.length == 2
+        error(node.location, "cons requires exactly two arguments")
+        return nil
+      end
+      car, cdr = arguments.map { |item| parse_expression(item) }
+      return nil unless car && cdr
+
+      Forms::ConsValue.new(car: car, cdr: cdr)
+    end
+
+    def parse_quote(node)
+      return nil unless reject_expression_block(node, "quote")
+
+      argument = single_expression_argument(node, "quote")
+      return nil unless argument
+
+      value = parse_quoted_data(argument, quasiquote: false, allow_splice: false)
+      value ? Forms::Quote.new(value: value) : nil
+    end
+
+    def parse_quasiquote(node)
+      return nil unless reject_expression_block(node, "quasiquote")
+
+      argument = single_expression_argument(node, "quasiquote")
+      return nil unless argument
+
+      value = parse_quoted_data(argument, quasiquote: true, allow_splice: false)
+      value ? Forms::QuasiQuote.new(value: value) : nil
+    end
+
+    def reject_expression_block(node, name)
+      return true unless node.block
+
+      error(node.location, "#{name} does not take a block")
+      false
+    end
+
+    def single_expression_argument(node, name)
+      arguments = node.arguments&.arguments || []
+      return arguments.first if arguments.one?
+
+      error(node.location, "#{name} requires exactly one argument")
+    end
+
+    def parse_quoted_data(node, quasiquote:, allow_splice:)
+      case node
+      when Prism::StringNode, Prism::InterpolatedStringNode,
+           Prism::IntegerNode, Prism::FloatNode, Prism::TrueNode,
+           Prism::FalseNode, Prism::NilNode,
+           Prism::SymbolNode, Prism::InterpolatedSymbolNode
+        parse_expression(node)
+      when Prism::ArrayNode
+        elements = node.elements.map do |element|
+          parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
+        end
+        elements.any?(&:nil?) ? nil : Forms::Vector.new(elements: elements)
+      when Prism::CallNode
+        if unqualified_call?(node, :list)
+          return parse_quoted_list(node, quasiquote: quasiquote)
+        end
+        if unqualified_call?(node, :cons)
+          return parse_quoted_cons(node, quasiquote: quasiquote)
+        end
+        if quasiquote && unqualified_call?(node, :unquote)
+          return parse_template_escape(node, splice: false)
+        end
+        if quasiquote && unqualified_call?(node, :splice)
+          unless allow_splice
+            return error(node.location,
+                         "splice must appear inside a quasiquoted list or vector")
+          end
+          return parse_template_escape(node, splice: true)
+        end
+
+        error(node.location,
+              "quoted data supports only literals, arrays, list, and cons")
+      else
+        error(node.location,
+              "unsupported quoted data: #{node.class.name.delete_prefix("Prism::")}")
+      end
+    end
+
+    def parse_quoted_list(node, quasiquote:)
+      return nil unless reject_expression_block(node, "list")
+
+      elements = (node.arguments&.arguments || []).map do |element|
+        parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
+      end
+      elements.any?(&:nil?) ? nil : Forms::ListValue.new(elements: elements)
+    end
+
+    def parse_quoted_cons(node, quasiquote:)
+      return nil unless reject_expression_block(node, "cons")
+
+      arguments = node.arguments&.arguments || []
+      unless arguments.length == 2
+        error(node.location, "cons requires exactly two arguments")
+        return nil
+      end
+      car = parse_quoted_data(arguments[0], quasiquote: quasiquote, allow_splice: false)
+      cdr = parse_quoted_data(arguments[1], quasiquote: quasiquote, allow_splice: false)
+      return nil unless car && cdr
+
+      Forms::ConsValue.new(car: car, cdr: cdr)
+    end
+
+    def parse_template_escape(node, splice:)
+      return nil unless reject_expression_block(node, node.name)
+
+      argument = single_expression_argument(node, node.name)
+      return nil unless argument
+
+      value = parse_expression(argument)
+      return nil unless value
+
+      splice ? Forms::Splice.new(value: value) : Forms::Unquote.new(value: value)
+    end
+
     def parse_symbol_expression(node)
       ok, value = extract_symbol(node)
       return nil unless ok
@@ -587,9 +724,8 @@ module Ruri
       Forms::Literal.new(kind: :symbol, value: normalized)
     end
 
-    # Statements inside a with_current_buffer block: only nested buffer
-    # blocks and insert are valid here; interactive belongs to the command
-    # body alone.
+    # Statements shared by nested bodies. Interactive belongs only at the
+    # beginning of a command body.
     def parse_buffer_statements(statements)
       forms = []
       statements.each do |stmt|

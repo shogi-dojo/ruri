@@ -68,6 +68,10 @@ class ElispTest < Minitest::Test
     assert_raises(ArgumentError) { Ruri::Elisp.float(Float::INFINITY) }
     assert_raises(ArgumentError) { Ruri::Elisp.vector("raw") }
     assert_raises(ArgumentError) { Ruri::Elisp.quote("raw") }
+    assert_raises(ArgumentError) { Ruri::Elisp.dotted_pair("raw", Ruri::Elisp.symbol("ok")) }
+    assert_raises(ArgumentError) { Ruri::Elisp.quasiquote("raw") }
+    assert_raises(ArgumentError) { Ruri::Elisp.unquote("raw") }
+    assert_raises(ArgumentError) { Ruri::Elisp.splice("raw") }
   end
 
   def test_prints_inline_lists_and_rejects_nested_collections
@@ -80,5 +84,30 @@ class ElispTest < Minitest::Test
     assert_raises(ArgumentError) do
       Ruri::Elisp.inline_list(Ruri::Elisp.list(Ruri::Elisp.symbol("nested")))
     end
+  end
+
+  def test_prints_dotted_pairs_and_reader_prefix_forms
+    pair = Ruri::Elisp.quote(
+      Ruri::Elisp.dotted_pair(
+        Ruri::Elisp.symbol("key"),
+        Ruri::Elisp.symbol("value")
+      )
+    )
+    template = Ruri::Elisp.quasiquote(
+      Ruri::Elisp.list(
+        Ruri::Elisp.symbol("head"),
+        Ruri::Elisp.unquote(
+          Ruri::Elisp.list(Ruri::Elisp.symbol("upcase"), Ruri::Elisp.string("x"))
+        ),
+        Ruri::Elisp.splice(Ruri::Elisp.symbol("tail"))
+      )
+    )
+
+    assert_equal "'(key . value)", Ruri::Elisp::Printer.print(pair)
+    assert_equal <<~ELISP.chomp, Ruri::Elisp::Printer.print(template)
+      `(head
+        ,(upcase "x")
+        ,@tail)
+    ELISP
   end
 end

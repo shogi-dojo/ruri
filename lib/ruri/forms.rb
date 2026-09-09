@@ -36,6 +36,14 @@ module Ruri
     Lambda = Data.define(:parameters, :body)
     FunctionReference = Data.define(:source_name, :name)
 
+    # Lisp data constructors and template forms.
+    ListValue = Data.define(:elements)
+    ConsValue = Data.define(:car, :cdr)
+    Quote = Data.define(:value)
+    QuasiQuote = Data.define(:value)
+    Unquote = Data.define(:value)
+    Splice = Data.define(:value)
+
     # A hygienically renamed lexical variable assignment and reference.
     LocalWrite = Data.define(:source_name, :name, :value)
     LocalRead = Data.define(:source_name, :name)

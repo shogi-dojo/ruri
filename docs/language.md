@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.5
+# Ruri language contract — version 0.6
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.5: every construct below is supported,
+is the exact scope of version 0.6: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -38,6 +38,10 @@ everything else is rejected with a source position.
 | `unless condition … else … end` | The negated conditional form. The `else` branch is optional. |
 | `fn do \|value\| … end` | Creates a lexical lambda: `(lambda (ruri--local-value) …)`. Zero or more required positional parameters are accepted. The body uses normal Ruri statements and may capture command locals. |
 | `function(:buffer_name)` | Creates the named function value `(function buffer-name)`. The literal symbol is normalized from snake_case to kebab-case. |
+| `list(1, :two)` | Constructs an evaluated Lisp list: `(list 1 'two)`. Unlike Ruby array syntax, this produces a list rather than a vector. |
+| `cons(:key, value)` | Constructs one cons cell: `(cons 'key ruri--local-value)`. Exactly two evaluated arguments are required. |
+| `quote(list(:a, :b))` | Emits literal data using reader quote syntax: `'(a b)`. Quoted data accepts literals, arrays, `list`, and `cons`; runtime expressions are rejected. |
+| `quasiquote(list(:a, unquote(value), splice(items)))` | Emits a backquoted template: `` `(a ,value ,@items) ``. `splice` is valid only within a quasiquoted list or vector. |
 | Comments and whitespace | Accepted according to Ruby syntax (`#` line comments, `=begin`/`=end` block comments); no effect on semantics. |
 
 ## Emacs Lisp calls
@@ -77,14 +81,37 @@ arguments to `el.*` calls.
 | `name` | `ruri--local-name` | Reference to a local assigned somewhere in the same command |
 | `fn do \|value\| … end` | `(lambda (ruri--local-value) …)` | Lexical anonymous function |
 | `function(:identity)` | `(function identity)` | Named function value suitable for callbacks |
+| `list(1, :two)` | `(list 1 'two)` | Evaluated proper list |
+| `cons(:key, value)` | `(cons 'key ruri--local-value)` | Evaluated cons cell |
+| `quote(list(:a, :b))` | `'(a b)` | Literal data without evaluation |
+| `quasiquote(list(:a, unquote(value)))` | `` `(a ,ruri--local-value) `` | Data template with evaluated positions |
 
 Ruby arrays lower to a call to `vector`, rather than bracket syntax, because an
 Emacs vector literal is self-evaluating and would not evaluate nested calls.
 
+### Lisp data
+
+- `list` and `cons` evaluate their elements at runtime. They are explicit Ruri
+  expressions so lists stay distinct from Ruby arrays, which represent Emacs
+  vectors.
+- `quote` accepts one data expression composed from strings, numbers,
+  booleans, `nil`, symbols, arrays, `list`, and `cons`. Calls and local reads
+  are rejected because quoted positions are not evaluated.
+- `quasiquote` accepts the same data grammar and additionally recognizes
+  `unquote(expression)` and `splice(expression)`. An unquoted expression is a
+  normal Ruri expression. A splice must be an element of a quasiquoted list or
+  vector; its runtime value must be a compatible sequence as required by
+  Emacs.
+- Symbols inside `quote` and `quasiquote` become raw data symbols. Symbols in
+  evaluated expressions retain the existing behavior and emit their own quote.
+  This prevents nested data from being double quoted.
+- Nested `quote` or `quasiquote` forms are reserved for later work. Version 0.6
+  supports one template level with any number of unquoted or spliced values.
+
 ### Function values
 
 - `fn` takes no call arguments and requires a block. Its block parameters are
-  Ruby's ordinary `|name, other|` syntax. Version 0.5 accepts required
+  Ruby's ordinary `|name, other|` syntax. Version 0.6 accepts required
   positional parameters only; optional, rest, keyword, and block parameters
   are rejected.
 - Lambda parameters use the same hygienic local-name lowering and shadow a
@@ -126,7 +153,7 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
   and other ASCII control characters (emitted as three-digit octal
   escapes). Non-ASCII UTF-8 characters are written literally and the
   output file is UTF-8.
-- Rejected in v0.5: string interpolation (`#{…}`), heredocs, character
+- Rejected in v0.6: string interpolation (`#{…}`), heredocs, character
   literals, and concatenated or adjacent string forms.
 
 ## Rejected outright
@@ -177,8 +204,7 @@ Generated Lisp (`examples/hello.el`):
 ## Reserved for later versions
 
 User-defined noninteractive functions, optional and rest lambda parameters,
-lists and cons cells, quasiquotation, loops, and a raw Lisp escape hatch remain
-out of scope.
+nested quasiquotation, loops, and a raw Lisp escape hatch remain out of scope.
 
 ## Path toward broad Elisp coverage
 
@@ -189,10 +215,11 @@ The remaining language work is primarily about representing values and lexical
 structure safely:
 
 1. Noninteractive function definitions plus optional and rest parameters;
-   v0.5 already provides function references, lexical lambdas, captures, and
+   v0.5 provides function references, lexical lambdas, captures, and
    required positional parameters for hooks and higher-order APIs.
-2. Lists, cons cells, `quote`, and quasiquote/unquote, enabling conventional
-   Lisp data and macro arguments alongside the existing vector syntax.
+2. Nested quasiquotation and richer reader data; v0.6 provides evaluated
+   lists and cons cells, literal quote, and single-level quasiquote with
+   unquote and splicing.
 3. Ruby boolean, comparison, arithmetic, and loop syntax lowered to explicit
    Elisp forms.
 4. Command argument lists and interactive specifications.

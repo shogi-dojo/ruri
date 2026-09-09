@@ -1,6 +1,6 @@
 ;;; ruri.el --- Compile and load Ruri (Ruby-shaped) extensions -*- lexical-binding: t; -*-
 
-;; Version: 0.5.0
+;; Version: 0.6.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: extensions, languages
 ;; URL: https://github.com/shogi-dojo/ruri

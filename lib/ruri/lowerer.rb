@@ -69,8 +69,29 @@ module Ruri
         expression.elements.each do |element|
           collect_expression_locals(element, names, shadowed)
         end
+      when Forms::ListValue
+        expression.elements.each do |element|
+          collect_expression_locals(element, names, shadowed)
+        end
+      when Forms::ConsValue
+        collect_expression_locals(expression.car, names, shadowed)
+        collect_expression_locals(expression.cdr, names, shadowed)
       when Forms::Lambda
         collect_locals(expression.body, names, shadowed + expression.parameters)
+      when Forms::QuasiQuote
+        collect_template_locals(expression.value, names, shadowed)
+      end
+    end
+
+    def collect_template_locals(value, names, shadowed)
+      case value
+      when Forms::Unquote, Forms::Splice
+        collect_expression_locals(value.value, names, shadowed)
+      when Forms::ListValue, Forms::Vector
+        value.elements.each { |element| collect_template_locals(element, names, shadowed) }
+      when Forms::ConsValue
+        collect_template_locals(value.car, names, shadowed)
+        collect_template_locals(value.cdr, names, shadowed)
       end
     end
 
@@ -118,6 +139,17 @@ module Ruri
           Elisp.symbol("vector"),
           *expression.elements.map { |element| lower_expression(element) }
         )
+      when Forms::ListValue
+        Elisp.list(
+          Elisp.symbol("list"),
+          *expression.elements.map { |element| lower_expression(element) }
+        )
+      when Forms::ConsValue
+        Elisp.list(
+          Elisp.symbol("cons"),
+          lower_expression(expression.car),
+          lower_expression(expression.cdr)
+        )
       when Forms::Literal
         lower_literal(expression)
       when Forms::LocalRead
@@ -133,8 +165,47 @@ module Ruri
           Elisp.symbol("function"),
           Elisp.symbol(expression.name)
         )
+      when Forms::Quote
+        Elisp.quote(lower_quoted_data(expression.value))
+      when Forms::QuasiQuote
+        Elisp.quasiquote(lower_quoted_data(expression.value))
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
+      end
+    end
+
+    def lower_quoted_data(value)
+      case value
+      when Forms::Literal
+        lower_data_literal(value)
+      when Forms::ListValue
+        Elisp.list(*value.elements.map { |element| lower_quoted_data(element) })
+      when Forms::ConsValue
+        Elisp.dotted_pair(
+          lower_quoted_data(value.car),
+          lower_quoted_data(value.cdr)
+        )
+      when Forms::Vector
+        Elisp.vector(*value.elements.map { |element| lower_quoted_data(element) })
+      when Forms::Unquote
+        Elisp.unquote(lower_expression(value.value))
+      when Forms::Splice
+        Elisp.splice(lower_expression(value.value))
+      else
+        raise ArgumentError, "cannot lower quoted Ruri data: #{value.class}"
+      end
+    end
+
+    def lower_data_literal(literal)
+      case literal.kind
+      when :string then Elisp.string(literal.value)
+      when :integer then Elisp.integer(literal.value)
+      when :float then Elisp.float(literal.value)
+      when :true then Elisp.symbol("t")
+      when :false, :nil then Elisp.symbol("nil")
+      when :symbol then Elisp.symbol(literal.value)
+      else
+        raise ArgumentError, "cannot lower Ruri data literal: #{literal.kind}"
       end
     end
 

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Ruri
-  VERSION = "0.5.0"
+  VERSION = "0.6.0"
 end
 
 require_relative "ruri/diagnostic"

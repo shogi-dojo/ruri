@@ -160,4 +160,33 @@ class LowererTest < Minitest::Test
     assert_equal "setq", lambda.items[2].items.first.name
     assert_equal "ruri--local-value", lambda.items[2].items[1].name
   end
+
+  def test_lowers_lisp_data_and_templates
+    command = parse(<<~RURI).first
+      command :data do
+        interactive
+        tail = list(:b, "c")
+        pair = cons(:key, "value")
+        literal = quote(list(:alpha, cons(:left, :right)))
+        template = quasiquote(list(:head, unquote(el.upcase("x")), splice(tail)))
+      end
+    RURI
+
+    scope = Ruri::Lowerer.lower([command]).first.items.last
+    list = scope.items[2].items[2]
+    assert_equal "list", list.items.first.name
+    assert_instance_of Ruri::Elisp::Quote, list.items[1]
+
+    cons = scope.items[3].items[2]
+    assert_equal "cons", cons.items.first.name
+
+    quote = scope.items[4].items[2]
+    assert_instance_of Ruri::Elisp::Quote, quote
+    assert_instance_of Ruri::Elisp::DottedPair, quote.value.items.last
+
+    template = scope.items[5].items[2]
+    assert_instance_of Ruri::Elisp::QuasiQuote, template
+    assert_instance_of Ruri::Elisp::Unquote, template.value.items[1]
+    assert_instance_of Ruri::Elisp::Splice, template.value.items[2]
+  end
 end

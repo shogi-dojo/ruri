@@ -212,4 +212,22 @@ class EmitterTest < Minitest::Test
                     '(concat ruri--local-prefix ruri--local-value ">")'
     assert_includes output, "(function callbacks)"
   end
+
+  def test_emits_lists_cons_quote_and_quasiquote
+    output = Ruri.compile(<<~RURI, path: "data.ruri")
+      command :data do
+        interactive
+        tail = list("b", "c")
+        pair = quote(cons(:key, :value))
+        template = quasiquote(list(:head, unquote(el.upcase("x")), splice(tail)))
+        el.message("%S %S", pair, template)
+      end
+    RURI
+
+    assert_includes output, '(list "b" "c")'
+    assert_includes output, "'(key . value)"
+    assert_includes output, "`(head"
+    assert_includes output, ',(upcase "x")'
+    assert_includes output, ",@ruri--local-tail"
+  end
 end

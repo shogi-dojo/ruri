@@ -144,6 +144,75 @@ class ParserTest < Minitest::Test
     assert_equal "callbacks", reference.name
   end
 
+  def test_parses_lists_cons_quote_and_quasiquote
+    command = parse(<<~RURI).first
+      command :data do
+        interactive
+        tail = list("b", "c")
+        pair = cons(:key, "value")
+        literal = quote(list(:alpha, cons(:left, :right)))
+        template = quasiquote(list(:head, unquote(el.upcase("x")), splice(tail)))
+      end
+    RURI
+
+    list = command.body[1].value
+    assert_instance_of Ruri::Forms::ListValue, list
+    assert_equal %i[string string], list.elements.map(&:kind)
+
+    cons = command.body[2].value
+    assert_instance_of Ruri::Forms::ConsValue, cons
+    assert_equal :symbol, cons.car.kind
+
+    quote = command.body[3].value
+    assert_instance_of Ruri::Forms::Quote, quote
+    assert_instance_of Ruri::Forms::ConsValue, quote.value.elements.last
+
+    quasiquote = command.body[4].value
+    assert_instance_of Ruri::Forms::QuasiQuote, quasiquote
+    assert_instance_of Ruri::Forms::Unquote, quasiquote.value.elements[1]
+    assert_instance_of Ruri::Forms::Splice, quasiquote.value.elements[2]
+  end
+
+  def test_rejects_template_escapes_outside_quasiquote
+    %w[unquote splice].each do |name|
+      diag = single_diagnostic(<<~RURI)
+        command :data do
+          interactive
+          value = #{name}(1)
+        end
+      RURI
+
+      assert_match(/#{name} is only allowed inside quasiquote/, diag.message)
+      assert_equal 3, diag.line
+    end
+  end
+
+  def test_rejects_top_level_splice_in_quasiquote
+    diag = single_diagnostic(<<~RURI)
+      command :data do
+        interactive
+        values = list(1, 2)
+        template = quasiquote(splice(values))
+      end
+    RURI
+
+    assert_match(/splice must appear inside a quasiquoted list or vector/, diag.message)
+    assert_equal 4, diag.line
+  end
+
+  def test_rejects_runtime_expressions_inside_plain_quote
+    diag = single_diagnostic(<<~RURI)
+      command :data do
+        interactive
+        value = "dynamic"
+        literal = quote(list(:prefix, value))
+      end
+    RURI
+
+    assert_match(/unsupported quoted data: LocalVariableReadNode/, diag.message)
+    assert_equal 4, diag.line
+  end
+
   def test_lambda_parameters_do_not_escape_the_lambda
     diag = single_diagnostic(<<~RURI)
       command :callbacks do
@@ -156,7 +225,7 @@ class ParserTest < Minitest::Test
       end
     RURI
 
-    assert_match(/only locals, el\.\* calls, and literals are allowed/, diag.message)
+    assert_match(/use a Ruri expression or an el\.\* call/, diag.message)
     assert_equal 7, diag.line
   end
 
@@ -243,7 +312,7 @@ class ParserTest < Minitest::Test
       end
     RURI
 
-    assert_match(/only locals, el\.\* calls, and literals are allowed/, diag.message)
+    assert_match(/use a Ruri expression or an el\.\* call/, diag.message)
   end
 
   def test_rejects_keyword_arguments
@@ -407,7 +476,7 @@ end')
       end
     RURI
 
-    assert_match(/only locals, el\.\* calls, and literals are allowed/, diag.message)
+    assert_match(/use a Ruri expression or an el\.\* call/, diag.message)
     assert_equal 8, diag.line
   end
 

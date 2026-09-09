@@ -205,5 +205,23 @@
       (call-interactively #'callback-cmd)
       (should (equal "<a>,<b>!" (buffer-string))))))
 
+(ert-deftest ruri-test/lisp-data-and-quasiquote-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri data " t))
+         (source (expand-file-name "data.ruri" dir)))
+    (with-temp-file source
+      (insert "command :data_cmd do\n"
+              "  interactive\n"
+              "  tail = list(\"b\", \"c\")\n"
+              "  pair = quote(cons(:key, :value))\n"
+              "  template = quasiquote(list(:head, "
+              "unquote(el.upcase(\"x\")), splice(tail)))\n"
+              "  el.insert(el.format(\"%S|%S\", pair, template))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (with-temp-buffer
+      (call-interactively #'data-cmd)
+      (should (equal "(key . value)|(head \"X\" \"b\" \"c\")"
+                     (buffer-string))))))
+
 (provide 'ruri-test)
 ;;; ruri-test.el ends here

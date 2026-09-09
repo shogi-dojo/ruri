@@ -14,7 +14,11 @@ module Ruri
     List = Data.define(:items)
     InlineList = Data.define(:items)
     Vector = Data.define(:items)
+    DottedPair = Data.define(:car, :cdr)
     Quote = Data.define(:value)
+    QuasiQuote = Data.define(:value)
+    Unquote = Data.define(:value)
+    Splice = Data.define(:value)
 
     module_function
 
@@ -64,14 +68,38 @@ module Ruri
       Vector.new(items: items.freeze)
     end
 
+    def dotted_pair(car, cdr)
+      validate_items!([car, cdr], "dotted pairs")
+      DottedPair.new(car: car, cdr: cdr)
+    end
+
     def quote(value)
       raise ArgumentError, "quoted values must be Elisp nodes" unless node?(value)
 
       Quote.new(value: value)
     end
 
+    def quasiquote(value)
+      raise ArgumentError, "quasiquoted values must be Elisp nodes" unless node?(value)
+
+      QuasiQuote.new(value: value)
+    end
+
+    def unquote(value)
+      raise ArgumentError, "unquoted values must be Elisp nodes" unless node?(value)
+
+      Unquote.new(value: value)
+    end
+
+    def splice(value)
+      raise ArgumentError, "spliced values must be Elisp nodes" unless node?(value)
+
+      Splice.new(value: value)
+    end
+
     def node?(value)
-      [Symbol, String, Integer, Float, List, InlineList, Vector, Quote].any? do |type|
+      [Symbol, String, Integer, Float, List, InlineList, Vector, DottedPair,
+       Quote, QuasiQuote, Unquote, Splice].any? do |type|
         value.is_a?(type)
       end
     end
