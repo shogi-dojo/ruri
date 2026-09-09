@@ -125,4 +125,14 @@ class EmitterTest < Minitest::Test
     assert output.start_with?(";;; -*- lexical-binding: t; -*-\n")
     assert_includes output, "from test.ruri"
   end
+
+  def test_source_path_cannot_add_lines_to_generated_lisp
+    path = "safe.ruri\n(error \"injected\")\t"
+
+    output = Ruri.compile(HELLO_SOURCE, path: path)
+
+    assert_includes output, "from safe.ruri\\n(error \"injected\")\\t. DO NOT EDIT."
+    assert_equal 1, output.lines.count { |line| line.include?("injected") }
+    refute output.lines.any? { |line| line.start_with?("(error") }
+  end
 end

@@ -37,8 +37,9 @@ everything else is rejected with a source position.
 - Command names must match ASCII `[a-z][a-z0-9_]*` in the source.
 - Each `_` becomes `-` in the emitted Emacs Lisp name (`:hello_buffer`
   defines `hello-buffer`).
-- Two commands in one file must not produce the same Lisp name after the
-  conversion (`:foo_bar` and `:"foo-bar"` collide and are rejected).
+- Two commands in one file must not define the same name. Because the source
+  grammar excludes hyphens, underscore-to-hyphen conversion is one-to-one for
+  valid command names.
 - Reloading the same extension may redefine its own command normally —
   the duplicate check is per compile unit, not per Emacs session.
 

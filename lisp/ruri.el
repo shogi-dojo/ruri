@@ -41,8 +41,8 @@
 
 (defcustom ruri-compiler-executable "ruri"
   "Executable that compiles `.ruri' source into Emacs Lisp.
-Looked up on `exec-path'.  See `ruri-compiler-arguments' for how the
-command line is assembled."
+Looked up on variable `exec-path'.  See `ruri-compiler-arguments' for
+how the command line is assembled."
   :type 'string)
 
 (defcustom ruri-compiler-arguments '("compile")
@@ -77,7 +77,7 @@ diagnostics; the previous output file is left untouched."
   (let* ((source (expand-file-name source))
          (output (ruri--output-path source))
          (executable (or (executable-find ruri-compiler-executable)
-                         (user-error "ruri: compiler executable %S not found on exec-path (see `ruri-compiler-executable')"
+                         (user-error "Ruri: compiler executable %S not found on exec-path (see `ruri-compiler-executable')"
                                      ruri-compiler-executable)))
          (arguments (append ruri-compiler-arguments
                             (list source "--output" output))))
@@ -88,9 +88,9 @@ diagnostics; the previous output file is left untouched."
              (diagnostics (string-trim (buffer-string))))
         (if (zerop exit-code)
             (progn
-              (message "ruri: compiled %s -> %s" source output)
+              (message "Ruri: compiled %s -> %s" source output)
               output)
-          (error "ruri: compiling %s failed:\n%s" source diagnostics))))))
+          (error "Ruri: compiling %s failed:\n%s" source diagnostics))))))
 
 ;;;###autoload
 (defun ruri-compile-file (source)
