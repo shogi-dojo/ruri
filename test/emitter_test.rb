@@ -258,4 +258,28 @@ class EmitterTest < Minitest::Test
     assert_includes output, "(not\n"
     assert_includes output, "(equal ruri--local-count 6)"
   end
+
+  def test_emits_top_level_function_definitions
+    output = Ruri.compile(<<~RURI, path: "functions.ruri")
+      function :factorial do |number|
+        if number <= 1
+          1
+        else
+          number * el.factorial(number - 1)
+        end
+      end
+
+      function :decorate do |value|
+        prefix = "<"
+        el.concat(prefix, value, ">")
+      end
+    RURI
+
+    assert_includes output, "(defun factorial (ruri--local-number)"
+    assert_includes output, "(* ruri--local-number"
+    assert_includes output, "(factorial"
+    assert_includes output, "(defun decorate (ruri--local-value)"
+    assert_includes output, "(let (ruri--local-prefix)"
+    assert_includes output, '(concat ruri--local-prefix ruri--local-value ">")'
+  end
 end

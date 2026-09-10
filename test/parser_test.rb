@@ -42,6 +42,108 @@ class ParserTest < Minitest::Test
     assert_equal %w[first-cmd second-cmd], commands.map(&:name)
   end
 
+  def test_parses_top_level_functions_with_parameters_and_value_branches
+    definitions = parse(<<~RURI)
+      function :factorial do |number|
+        if number <= 1
+          1
+        else
+          number * el.factorial(number - 1)
+        end
+      end
+
+      function :decorate do |value|
+        prefix = "<"
+        el.concat(prefix, value, ">")
+      end
+    RURI
+
+    factorial, decorate = definitions
+    assert_instance_of Ruri::Forms::FunctionDefinition, factorial
+    assert_equal "factorial", factorial.name
+    assert_equal ["ruri--local-number"], factorial.parameters
+    conditional = factorial.body.first
+    assert_instance_of Ruri::Forms::Conditional, conditional
+    assert_instance_of Ruri::Forms::ExpressionStatement,
+                       conditional.then_body.first
+    assert_instance_of Ruri::Forms::Operation,
+                       conditional.else_body.first.expression
+
+    assert_instance_of Ruri::Forms::FunctionDefinition, decorate
+    assert_equal ["ruri--local-value"], decorate.parameters
+    assert_instance_of Ruri::Forms::LocalWrite, decorate.body.first
+    assert_instance_of Ruri::Forms::Call, decorate.body.last
+  end
+
+  def test_allows_zero_parameter_and_empty_functions
+    function = parse(<<~RURI).first
+      function :noop do
+      end
+    RURI
+
+    assert_instance_of Ruri::Forms::FunctionDefinition, function
+    assert_empty function.parameters
+    assert_empty function.body
+  end
+
+  def test_rejects_name_collisions_between_commands_and_functions
+    diag = single_diagnostic(<<~RURI)
+      command :same_name do
+        interactive
+      end
+
+      function :same_name do
+        nil
+      end
+    RURI
+
+    assert_match(/duplicate function definition `same-name`/, diag.message)
+    assert_match(/already defined as command/, diag.message)
+    assert_equal 5, diag.line
+  end
+
+  def test_rejects_optional_function_parameters
+    diag = single_diagnostic(<<~RURI)
+      function :optional do |value = nil|
+        value
+      end
+    RURI
+
+    assert_match(/function supports only required positional block parameters/, diag.message)
+    assert_equal 1, diag.line
+  end
+
+  def test_rejects_interactive_inside_function
+    diag = single_diagnostic(<<~RURI)
+      function :bad do
+        interactive
+      end
+    RURI
+
+    assert_match(/interactive is only allowed as the first statement of a command body/, diag.message)
+    assert_equal 2, diag.line
+  end
+
+  def test_rejects_function_definition_without_a_block
+    diag = single_diagnostic("function(:missing)\n")
+
+    assert_match(/function definition requires a do\.\.\.end block/, diag.message)
+    assert_equal 1, diag.line
+  end
+
+  def test_rejects_nested_function_definitions
+    diag = single_diagnostic(<<~RURI)
+      function :outer do
+        function :inner do
+          nil
+        end
+      end
+    RURI
+
+    assert_match(/nested function definitions are not supported/, diag.message)
+    assert_equal 2, diag.line
+  end
+
   def test_accepts_quoted_symbols_comments_and_whitespace
     commands = parse(<<~RURI)
       # a leading comment

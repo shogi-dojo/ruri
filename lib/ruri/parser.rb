@@ -28,7 +28,7 @@ module Ruri
       @source = source
       @path = path
       @diagnostics = []
-      @commands = []
+      @definitions = []
       @seen_names = {}
     end
 
@@ -43,7 +43,7 @@ module Ruri
       @result = result
       result.value.statements.body.each { |node| parse_top_level(node) }
       fail! if @diagnostics.any?
-      @commands
+      @definitions
     end
 
     private
@@ -162,10 +162,18 @@ module Ruri
     end
 
     def parse_top_level(node)
-      unless node.is_a?(Prism::CallNode) && node.name == :command
+      unless node.is_a?(Prism::CallNode)
         unsupported(node)
         return
       end
+      case node.name
+      when :command then parse_command_definition(node)
+      when :function then parse_function_definition(node)
+      else unsupported(node)
+      end
+    end
+
+    def parse_command_definition(node)
       if node.receiver
         error(node.location, "unsupported construct: method call `command` with explicit receiver")
         return
@@ -184,29 +192,83 @@ module Ruri
         error(node.location, "command requires exactly one literal symbol argument")
         return
       end
-      ok, source_name = extract_symbol(args[0])
-      return unless ok
+      unless literal_symbol_node?(args[0])
+        error(node.location, "command requires exactly one literal symbol argument")
+        return
+      end
+      definition_name = parse_definition_name(args[0], :command)
+      return unless definition_name
+      source_name, lisp_name = definition_name
+
+      body = with_local_scope(node.block) { parse_command_body(node.block) }
+      @definitions << Forms::Command.new(source_name: source_name, name: lisp_name, body: body)
+    end
+
+    def parse_function_definition(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `function` with explicit receiver")
+        return
+      end
+      unless node.block
+        error(node.location, "function definition requires a do...end block")
+        return
+      end
+
+      args = node.arguments&.arguments || []
+      if args.length != 1
+        error(node.location, "function definition requires exactly one literal symbol argument")
+        return
+      end
+      unless literal_symbol_node?(args[0])
+        error(node.location, "function definition requires exactly one literal symbol argument")
+        return
+      end
+      definition_name = parse_definition_name(args[0], :function)
+      return unless definition_name
+      source_name, lisp_name = definition_name
+
+      parameters = parse_required_block_parameters(node.block, "function")
+      return unless parameters
+      generated_parameters = parameters.map { |name| generated_local_name(name) }
+      body = with_local_scope(node.block, parameters) do
+        parse_value_body(node.block.body&.body || [])
+      end
+      @definitions << Forms::FunctionDefinition.new(
+        source_name: source_name,
+        name: lisp_name,
+        parameters: generated_parameters,
+        body: body
+      )
+    end
+
+    def parse_definition_name(node, kind)
+      ok, source_name = extract_symbol(node)
+      return nil unless ok
 
       unless source_name.match?(NAME_RE)
-        error(args[0].location,
-              "invalid command name `#{source_name}`; must match [a-z][a-z0-9_]*")
-        return
+        error(node.location,
+              "invalid #{kind} name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return nil
       end
 
       lisp_name = source_name.tr("_", "-")
       if @seen_names.key?(lisp_name)
-        error(args[0].location, "duplicate command definition `#{lisp_name}`")
-        return
+        previous_kind = @seen_names.fetch(lisp_name)
+        error(node.location,
+              "duplicate #{kind} definition `#{lisp_name}`; already defined as #{previous_kind}")
+        return nil
       end
-      @seen_names[lisp_name] = source_name
-
-      body = with_local_scope(node.block) { parse_command_body(node.block) }
-      @commands << Forms::Command.new(source_name: source_name, name: lisp_name, body: body)
+      @seen_names[lisp_name] = kind
+      [source_name, lisp_name]
     end
 
-    def with_local_scope(block)
+    def literal_symbol_node?(node)
+      node.is_a?(Prism::SymbolNode) || node.is_a?(Prism::InterpolatedSymbolNode)
+    end
+
+    def with_local_scope(block, parameters = [])
       previous_names = @local_names
-      @local_names = collect_local_names(block)
+      @local_names = (collect_local_names(block, {}, parameters) + parameters).uniq
       yield
     ensure
       @local_names = previous_names
@@ -292,6 +354,12 @@ module Ruri
           end
         when :command
           error(stmt.location, "nested command definitions are not supported")
+        when :function
+          if stmt.block
+            error(stmt.location, "nested function definitions are not supported")
+          else
+            unsupported(stmt)
+          end
         when :with_current_buffer
           if (form = parse_with_current_buffer(stmt))
             forms << form
@@ -399,10 +467,11 @@ module Ruri
       )
     end
 
-    def parse_conditional(node, negated:)
+    def parse_conditional(node, negated:, value_branches: false)
       condition = parse_expression(node.predicate)
-      then_body = parse_buffer_statements(node.statements&.body || [])
-      else_body = parse_conditional_else(node)
+      body_parser = value_branches ? method(:parse_value_body) : method(:parse_buffer_statements)
+      then_body = body_parser.call(node.statements&.body || [])
+      else_body = parse_conditional_else(node, value_branches: value_branches)
       return nil unless condition
 
       Forms::Conditional.new(
@@ -413,15 +482,16 @@ module Ruri
       )
     end
 
-    def parse_conditional_else(node)
+    def parse_conditional_else(node, value_branches: false)
       clause = node.is_a?(Prism::IfNode) ? node.subsequent : node.else_clause
+      body_parser = value_branches ? method(:parse_value_body) : method(:parse_buffer_statements)
       case clause
       when nil
         []
       when Prism::ElseNode
-        parse_buffer_statements(clause.statements&.body || [])
+        body_parser.call(clause.statements&.body || [])
       when Prism::IfNode
-        form = parse_conditional(clause, negated: false)
+        form = parse_conditional(clause, negated: false, value_branches: value_branches)
         form ? [form] : []
       else
         unsupported(clause)
@@ -596,7 +666,7 @@ module Ruri
       previous_names = @local_names
       begin
         @local_names = ((@local_names || []) + parameters).uniq
-        body = parse_buffer_statements(node.block.body&.body || [])
+        body = parse_value_body(node.block.body&.body || [])
       ensure
         @local_names = previous_names
       end
@@ -854,6 +924,46 @@ module Ruri
 
     # Statements shared by nested bodies. Interactive belongs only at the
     # beginning of a command body.
+    def parse_value_body(statements)
+      return [] if statements.empty?
+
+      forms = parse_buffer_statements(statements[0...-1])
+      last = statements.last
+      if last.is_a?(Prism::IfNode) || last.is_a?(Prism::UnlessNode)
+        form = parse_conditional(
+          last,
+          negated: last.is_a?(Prism::UnlessNode),
+          value_branches: true
+        )
+        forms << form if form
+      elsif value_expression_statement?(last)
+        expression = parse_expression(last)
+        if expression
+          forms << if expression.is_a?(Forms::Call)
+                     expression
+                   else
+                     Forms::ExpressionStatement.new(expression: expression)
+                   end
+        end
+      else
+        forms.concat(parse_buffer_statements([last]))
+      end
+      forms
+    end
+
+    def value_expression_statement?(node)
+      return false if node.is_a?(Prism::LocalVariableWriteNode) ||
+                      node.is_a?(Prism::IfNode) || node.is_a?(Prism::UnlessNode) ||
+                      node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode)
+      return true unless node.is_a?(Prism::CallNode)
+      return false if node.name == :each && node.receiver
+      return false if node.receiver.nil? &&
+                      %i[interactive command with_current_buffer insert].include?(node.name)
+      return false if node.receiver.nil? && node.name == :function && node.block
+
+      true
+    end
+
     def parse_buffer_statements(statements)
       forms = []
       statements.each do |stmt|
@@ -883,6 +993,12 @@ module Ruri
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
         when :command
           error(stmt.location, "nested command definitions are not supported")
+        when :function
+          if stmt.block
+            error(stmt.location, "nested function definitions are not supported")
+          else
+            unsupported(stmt)
+          end
         when :with_current_buffer
           if (form = parse_with_current_buffer(stmt))
             forms << form

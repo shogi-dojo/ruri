@@ -9,6 +9,8 @@ module Ruri
     # +source_name+ is the symbol as written; +name+ is the Emacs Lisp
     # name after `_` -> `-` conversion.
     Command = Data.define(:source_name, :name, :body)
+    # Top-level noninteractive function with hygienic required parameters.
+    FunctionDefinition = Data.define(:source_name, :name, :parameters, :body)
 
     # The required first statement of every command body.
     Interactive = Data.define
@@ -57,5 +59,7 @@ module Ruri
     Conditional = Data.define(:condition, :then_body, :else_body, :negated)
     Loop = Data.define(:condition, :body, :negated)
     Each = Data.define(:collection, :parameter, :body)
+    # Preserves an expression used for its value as a body form.
+    ExpressionStatement = Data.define(:expression)
   end
 end

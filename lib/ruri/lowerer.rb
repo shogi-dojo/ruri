@@ -5,13 +5,19 @@ module Ruri
   # This is the only component that knows how a Ruri construct maps to Lisp.
   class Lowerer
     class << self
-      def lower(commands)
-        new.lower(commands)
+      def lower(definitions)
+        new.lower(definitions)
       end
     end
 
-    def lower(commands)
-      commands.map { |command| lower_command(command) }
+    def lower(definitions)
+      definitions.map do |definition|
+        case definition
+        when Forms::Command then lower_command(definition)
+        when Forms::FunctionDefinition then lower_function_definition(definition)
+        else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
+        end
+      end
     end
 
     private
@@ -33,6 +39,25 @@ module Ruri
         Elisp.symbol("defun"),
         Elisp.symbol(command.name),
         Elisp.inline_list,
+        *body
+      )
+    end
+
+    def lower_function_definition(function)
+      body = function.body.map { |statement| lower_statement(statement) }
+      locals = collect_locals(function.body, [], function.parameters)
+      unless locals.empty?
+        body = [Elisp.list(
+          Elisp.symbol("let"),
+          Elisp.inline_list(*locals.map { |name| Elisp.symbol(name) }),
+          *body
+        )]
+      end
+
+      Elisp.list(
+        Elisp.symbol("defun"),
+        Elisp.symbol(function.name),
+        Elisp.inline_list(*function.parameters.map { |name| Elisp.symbol(name) }),
         *body
       )
     end
@@ -59,6 +84,8 @@ module Ruri
           collect_locals(statement.body, names, shadowed + [statement.parameter])
         when Forms::Call
           collect_expression_locals(statement, names, shadowed)
+        when Forms::ExpressionStatement
+          collect_expression_locals(statement.expression, names, shadowed)
         end
       end
       names
@@ -139,6 +166,8 @@ module Ruri
           ),
           lower_expression(statement.collection)
         )
+      when Forms::ExpressionStatement
+        lower_expression(statement.expression)
       else
         raise ArgumentError, "cannot lower Ruri form: #{statement.class}"
       end

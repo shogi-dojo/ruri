@@ -224,4 +224,35 @@ class LowererTest < Minitest::Test
     assert_equal ["ruri--local-item"], each.items[1].items[1].items.map(&:name)
     assert_equal "list", each.items[2].items.first.name
   end
+
+  def test_lowers_function_parameters_locals_recursion_and_return_values
+    definitions = parse(<<~RURI)
+      function :factorial do |number|
+        if number <= 1
+          1
+        else
+          number * el.factorial(number - 1)
+        end
+      end
+
+      function :decorate do |value|
+        prefix = "<"
+        el.concat(prefix, value, ">")
+      end
+    RURI
+
+    factorial, decorate = Ruri::Lowerer.lower(definitions)
+    assert_equal "defun", factorial.items.first.name
+    assert_equal "factorial", factorial.items[1].name
+    assert_equal ["ruri--local-number"], factorial.items[2].items.map(&:name)
+    assert_equal "if", factorial.items[3].items.first.name
+    recursive_call = factorial.items[3].items[3].items[2]
+    assert_equal "factorial", recursive_call.items.first.name
+
+    assert_equal ["ruri--local-value"], decorate.items[2].items.map(&:name)
+    scope = decorate.items[3]
+    assert_equal "let", scope.items.first.name
+    assert_equal ["ruri--local-prefix"], scope.items[1].items.map(&:name)
+    assert_equal "concat", scope.items.last.items.first.name
+  end
 end

@@ -35,8 +35,8 @@ module Ruri
       end
 
       source = File.read(args[:input], encoding: "UTF-8")
-      commands = Parser.parse(source, path: args[:input])
-      output = Emitter.emit(commands, source_path: args[:input])
+      definitions = Parser.parse(source, path: args[:input])
+      output = Emitter.emit(definitions, source_path: args[:input])
       atomic_write(output, to: args[:output])
       EXIT_OK
     rescue Ruri::CompileError => e

@@ -255,5 +255,34 @@
       (call-interactively #'loop-cmd)
       (should (equal "5/9/t/0/-3/t" (buffer-string))))))
 
+(ert-deftest ruri-test/top-level-functions-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri functions " t))
+         (source (expand-file-name "functions.ruri" dir)))
+    (with-temp-file source
+      (insert "function :factorial do |number|\n"
+              "  if number <= 1\n"
+              "    1\n"
+              "  else\n"
+              "    number * el.factorial(number - 1)\n"
+              "  end\n"
+              "end\n\n"
+              "function :decorate do |value|\n"
+              "  prefix = \"<\"\n"
+              "  el.concat(prefix, value, \">\")\n"
+              "end\n\n"
+              "command :function_cmd do\n"
+              "  interactive\n"
+              "  el.insert(el.format(\"%d/%s/%d\", el.factorial(5), "
+              "el.decorate(\"x\"), el.funcall(function(:factorial), 4)))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (functionp #'factorial))
+    (should (functionp #'decorate))
+    (should (= 120 (factorial 5)))
+    (should (equal "<x>" (decorate "x")))
+    (with-temp-buffer
+      (call-interactively #'function-cmd)
+      (should (equal "120/<x>/24" (buffer-string))))))
+
 (provide 'ruri-test)
 ;;; ruri-test.el ends here

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Ruri
-  VERSION = "0.7.0"
+  VERSION = "0.8.0"
 end
 
 require_relative "ruri/diagnostic"
@@ -17,7 +17,7 @@ module Ruri
   # Parses +source+ and emits the generated Emacs Lisp text.
   # Raises Ruri::CompileError when the source violates the contract.
   def self.compile(source, path:)
-    commands = Parser.parse(source, path: path)
-    Emitter.emit(commands, source_path: path)
+    definitions = Parser.parse(source, path: path)
+    Emitter.emit(definitions, source_path: path)
   end
 end
