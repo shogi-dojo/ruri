@@ -309,7 +309,8 @@ class PackageFormsTest < Minitest::Test
   end
 
   def test_org_fragtog_conversion_compiles
-    source = File.read(File.expand_path("../examples/org-fragtog.ruri", __dir__))
+    source = File.read(File.expand_path("../examples/org-fragtog.ruri", __dir__),
+                       encoding: "UTF-8")
     output = Ruri.compile(source, path: "examples/org-fragtog.ruri")
 
     assert_includes output, "(provide 'org-fragtog)"

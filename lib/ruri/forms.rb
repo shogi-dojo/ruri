@@ -111,6 +111,37 @@ module Ruri
     Conditional = Data.define(:condition, :then_body, :else_body, :negated)
     Loop = Data.define(:condition, :body, :negated)
     Each = Data.define(:collection, :parameter, :body)
+
+    # Value-producing iteration: `.map` → mapcar, `.select` → seq-filter
+    # (needs `require :seq` in the source), `.find` → seq-find (likewise).
+    # The block's final expression maps the element. Kept distinct from
+    # side-effecting `.each`, which lowers to mapc.
+    Iteration = Data.define(:name, :collection, :parameter, :body)
+
+    # `begin/rescue[/else]` lowered to condition-case. +var+ is the hygienic
+    # error-object binding shared by every clause, or nil. +clauses+ are
+    # [conditions, body] pairs in source order; +conditions+ is a nonempty
+    # list of Elisp condition-name symbols (a bare rescue maps to `error`).
+    # +else_body+ runs, and supplies the value, when the body raises nothing.
+    Rescue = Data.define(:var, :clauses, :else_body, :body)
+    # `begin/ensure` lowered to unwind-protect. +body+ holds the protected
+    # forms (a lone Rescue form when both clauses are present); the
+    # unwound value is the body's value, never the cleanup's.
+    Ensure = Data.define(:body, :ensure_body)
+
+    # `catch(:tag) do … end` and `throw :tag, value`. The tag is an
+    # unevaluated Elisp symbol that thrown values cross, so both are typed
+    # forms rather than el.* calls (which would quote the tag wrongly).
+    Catch = Data.define(:tag, :body)
+    Throw = Data.define(:tag, :value)
+
+    # Loop exits and definition returns. All three lower to throws against
+    # compiler-generated catch tags: `break`/`next` target their enclosing
+    # loop, `return` targets the innermost definition body. +value+ is the
+    # optional carried expression; a bare exit throws nil.
+    Break = Data.define(:value)
+    Next = Data.define(:value)
+    Return = Data.define(:value)
     # Preserves an expression used for its value as a body form.
     ExpressionStatement = Data.define(:expression)
   end

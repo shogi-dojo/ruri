@@ -343,4 +343,170 @@ class LowererTest < Minitest::Test
                  lambda_node.items[1].items.map(&:name)
     assert_equal "unless", lambda_node.items[2].items.first.name
   end
+
+  def test_lowers_rescue_to_condition_case
+    function = parse(<<~RURI).first
+      function :safe do |a|
+        begin
+          el.message("%S", a)
+        rescue :arith_error, :range_error => problem
+          el.message("math")
+        rescue
+          el.message("other")
+        else
+          el.message("ok")
+        end
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    body_form = form.items[3].items[2]
+    assert_equal "condition-case", body_form.items.first.name
+    assert_equal "ruri--local-problem", body_form.items[1].name
+    assert_equal "message", body_form.items[2].items.first.name
+    specific = body_form.items[3]
+    assert_equal ["arith-error", "range-error"], specific.items.first.items.map(&:name)
+    assert_equal "message", specific.items[1].items.first.name
+    fallback = body_form.items[4]
+    assert_equal ["error"], fallback.items.first.items.map(&:name)
+    success = body_form.items[5]
+    assert_equal ":success", success.items.first.name
+  end
+
+  def test_rescue_local_is_declared_in_the_enclosing_let
+    function = parse(<<~RURI).first
+      function :leaky do
+        begin
+          el.message("body")
+        rescue => problem
+          el.message("caught")
+        end
+        el.message("%S", problem)
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    scope = form.items[3]
+    assert_equal "let", scope.items.first.name
+    assert_equal ["ruri--local-problem"], scope.items[1].items.map(&:name)
+  end
+
+  def test_lowers_ensure_to_unwind_protect_with_the_body_value
+    function = parse(<<~RURI).first
+      function :guarded do
+        begin
+          el.message("work")
+        ensure
+          el.message("cleanup")
+        end
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    unwind = form.items[3]
+    assert_equal "unwind-protect", unwind.items.first.name
+    assert_equal "message", unwind.items[1].items.first.name
+    assert_equal "cleanup", unwind.items[2].items[1].value
+  end
+
+  def test_lowers_catch_and_throw_with_quoted_tags
+    function = parse(<<~RURI).first
+      function :seek do
+        catch(:found_value) do
+          throw :found_value, 7
+        end
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    catch_node = form.items[3]
+    assert_equal "catch", catch_node.items.first.name
+    assert_equal "found-value", catch_node.items[1].value.name
+    throw_node = catch_node.items[2]
+    assert_equal "throw", throw_node.items.first.name
+    assert_equal "found-value", throw_node.items[1].value.name
+    assert_equal 7, throw_node.items[2].value
+  end
+
+  def test_break_and_next_allocate_deterministic_catch_tags
+    function = parse(<<~RURI).first
+      function :scan do
+        while true
+          break
+        end
+        list(1).each do |item|
+          next if item == 0
+          el.identity(item)
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    while_catch = lowered.items[3]
+    assert_equal "catch", while_catch.items.first.name
+    assert_equal "ruri--break-1", while_catch.items[1].value.name
+    mapc_form = lowered.items[4]
+    assert_equal "mapc", mapc_form.items.first.name
+    lambda_form = mapc_form.items[1]
+    next_catch = lambda_form.items[2]
+    assert_equal "catch", next_catch.items.first.name
+    assert_equal "ruri--next-2", next_catch.items[1].value.name
+  end
+
+  def test_return_wraps_the_defun_body_in_a_catch
+    function = parse(<<~RURI).first
+      function :early do
+        return 5
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    return_catch = lowered.items[3]
+    assert_equal "catch", return_catch.items.first.name
+    assert_equal "ruri--return-1", return_catch.items[1].value.name
+    throw_form = return_catch.items[2]
+    assert_equal "throw", throw_form.items.first.name
+    assert_equal "ruri--return-1", throw_form.items[1].value.name
+    assert_equal 5, throw_form.items[2].value
+  end
+
+  def test_loops_without_exits_emit_no_catch
+    function = parse(<<~RURI).first
+      function :plain do
+        while true
+          el.identity(1)
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    assert_equal "while", lowered.items[3].items.first.name
+  end
+
+  def test_lowers_map_select_and_find_to_their_elisp_calls
+    definitions = parse(<<~RURI)
+      function :transform do
+        list(1).map do |item|
+          item
+        end
+      end
+
+      function :filter do
+        list(1).select do |item|
+          item
+        end
+      end
+
+      function :first_of do
+        list(1).find do |item|
+          item
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower(definitions)
+    assert_equal "mapcar", lowered[0].items[3].items.first.name
+    assert_equal "seq-filter", lowered[1].items[3].items.first.name
+    assert_equal "seq-find", lowered[2].items[3].items.first.name
+  end
 end

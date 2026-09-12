@@ -388,6 +388,149 @@
         (call-interactively #'ruri-test-prefix-cmd))
       (should (equal "nil" (buffer-string))))))
 
+(ert-deftest ruri-test/error-handling-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri rescue " t))
+         (source (expand-file-name "rescue.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_safe_div do |a, b|\n"
+              "  doc \"Divide A by B with error reporting.\"\n"
+              "  begin\n"
+              "    el.format(\"%S\", a / b)\n"
+              "  rescue :arith_error, :range_error => problem\n"
+              "    el.concat(\"math:\", el.error_message_string(problem))\n"
+              "  rescue\n"
+              "    \"other\"\n"
+              "  else\n"
+              "    el.concat(\"ok:\")\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; Success path: the else handler supplies the result.
+    (should (string-prefix-p "ok:" (ruri-test-safe-div 6 3)))
+    ;; A signalled arith-error is caught and the error object is bound.
+    (should (string-prefix-p "math:Arithmetic" (ruri-test-safe-div 1 0)))
+    ;; Any other error falls through to the bare rescue clause.
+    (should (equal "other" (ruri-test-safe-div "a" "b")))))
+
+(ert-deftest ruri-test/unwind-protect-runs-cleanup-on-error-path ()
+  (let* ((dir (make-temp-file "ruri ensure " t))
+         (source (expand-file-name "ensure.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_cleanups, 0, \"Cleanup counter.\"\n\n"
+              "function :ruri_test_guarded do\n"
+              "  doc \"Returns 42 while always running cleanup.\"\n"
+              "  begin\n"
+              "    42\n"
+              "  ensure\n"
+              "    assign :ruri_test_cleanups, var(:ruri_test_cleanups) + 1\n"
+              "  end\n"
+              "end\n\n"
+              "function :ruri_test_rescued do |a, b|\n"
+              "  doc \"Catches a math error and still runs cleanup.\"\n"
+              "  begin\n"
+              "    el.format(\"%S\", a / b)\n"
+              "  rescue :arith_error\n"
+              "    \"math\"\n"
+              "  ensure\n"
+              "    assign :ruri_test_cleanups, var(:ruri_test_cleanups) + 1\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The body value survives the cleanup, which runs exactly once.
+    (should (= 42 (ruri-test-guarded)))
+    (should (= 1 ruri-test-cleanups))
+    ;; The handler supplies the value on the error path, and the cleanup
+    ;; still runs after the handler.
+    (should (equal "math" (ruri-test-rescued 1 0)))
+    (should (= 2 ruri-test-cleanups))))
+
+(ert-deftest ruri-test/catch-and-throw-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri catch " t))
+         (source (expand-file-name "catch.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_seek do |limit|\n"
+              "  doc \"First item whose double reaches LIMIT, or none.\"\n"
+              "  catch(:found) do\n"
+              "    list(1, 2, 3, 4).each do |item|\n"
+              "      if item * 2 >= limit\n"
+              "        throw :found, item\n"
+              "      end\n"
+              "    end\n"
+              "    :none\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The thrown value crosses the tag and becomes the catch value.
+    (should (= 2 (ruri-test-seek 4)))
+    (should (eq 'none (ruri-test-seek 100)))))
+
+(ert-deftest ruri-test/break-next-and-return-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri exits " t))
+         (source (expand-file-name "exits.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_first_match do |threshold|\n"
+              "  doc \"Return the first item over THRESHOLD, or -1.\"\n"
+              "  list(3, 7, 11, 2).each do |item|\n"
+              "    if item > threshold\n"
+              "      return item\n"
+              "    end\n"
+              "  end\n"
+              "  -1\n"
+              "end\n\n"
+              "function :ruri_test_sum_until_cap do |cap|\n"
+              "  doc \"Sum 1, 2, 3, ... until the sum would pass CAP.\"\n"
+              "  total = 0\n"
+              "  count = 0\n"
+              "  while true\n"
+              "    count = count + 1\n"
+              "    break if total + count > cap\n"
+              "    total = total + count\n"
+              "  end\n"
+              "  total\n"
+              "end\n\n"
+              "function :ruri_test_skip_zeros do\n"
+              "  doc \"Total nonzero items.\"\n"
+              "  total = 0\n"
+              "  list(2, 0, 3, 0, 4).each do |item|\n"
+              "    next if item == 0\n"
+              "    total = total + item\n"
+              "  end\n"
+              "  total\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; return leaves the defun from inside an .each lambda.
+    (should (= 7 (ruri-test-first-match 6)))
+    (should (= -1 (ruri-test-first-match 99)))
+    ;; break ends the while loop before the cap is exceeded.
+    (should (= 10 (ruri-test-sum-until-cap 10)))
+    (should (= 6 (ruri-test-sum-until-cap 9)))
+    ;; next skips the zero items.
+    (should (= 9 (ruri-test-skip-zeros)))))
+
+(ert-deftest ruri-test/map-select-find-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri iteration " t))
+         (source (expand-file-name "iteration.ruri" dir)))
+    (with-temp-file source
+      (insert "require :seq\n\n"
+              "function :ruri_test_stats do |items|\n"
+              "  doc \"Doubled evens and the first item over 3.\"\n"
+              "  evens = items.select do |item|\n"
+              "    item % 2 == 0\n"
+              "  end\n"
+              "  doubled = evens.map do |item|\n"
+              "    item * 2\n"
+              "  end\n"
+              "  first_big = items.find do |item|\n"
+              "    item > 3\n"
+              "  end\n"
+              "  list(doubled, first_big)\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; select/map/find chain over a real list, requiring seq explicitly.
+    (should (equal '((4 8 16) 4) (ruri-test-stats (list 1 2 3 4 8))))
+    ;; An empty selection is Elisp nil, and find misses too.
+    (should (equal '(nil nil) (ruri-test-stats (list 1))))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

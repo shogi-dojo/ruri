@@ -347,4 +347,126 @@ class EmitterTest < Minitest::Test
         (interactive "P")
     ELISP
   end
+
+  def test_emits_condition_case
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :safe do |a|
+        doc "Divide or report."
+        begin
+          a + 1
+        rescue :arith_error => problem
+          el.message("%s", el.error_message_string(problem))
+        rescue
+          el.message("other")
+        else
+          el.message("ok")
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (let (ruri--local-problem)
+    (condition-case ruri--local-problem
+      (+ ruri--local-a 1)
+      ((arith-error)
+        (message "%s"
+          (error-message-string ruri--local-problem)))
+      ((error)
+        (message "other"))
+      (:success
+        (message "ok"))))
+    ELISP
+  end
+
+  def test_emits_unwind_protect_for_rescue_and_ensure
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :both do
+        doc "Composed clauses."
+        begin
+          el.message("work")
+        rescue :arith_error
+          el.message("math")
+        ensure
+          el.message("cleanup")
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (unwind-protect
+    (condition-case nil
+      (message "work")
+      ((arith-error)
+        (message "math")))
+    (message "cleanup"))
+    ELISP
+  end
+
+  def test_emits_catch_and_throw
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :seek do
+        doc "Find or bail out."
+        catch(:found_value) do
+          throw :found_value, 7
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (catch 'found-value
+    (throw 'found-value 7))
+    ELISP
+  end
+
+  def test_emits_break_next_and_return_as_tagged_throws
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :exits do |cap|
+        doc "Sample exits."
+        total = 0
+        while total < cap
+          total = total + 1
+          break if total == 3
+        end
+        return total
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (catch 'ruri--return-1
+    (let (ruri--local-total)
+      (setq ruri--local-total 0)
+      (catch 'ruri--break-2
+        (while
+          (< ruri--local-total ruri--local-cap)
+          (setq ruri--local-total
+            (+ ruri--local-total 1))
+          (if
+            (equal ruri--local-total 3)
+            (throw 'ruri--break-2 nil))))
+      (throw 'ruri--return-1 ruri--local-total)))
+    ELISP
+  end
+
+  def test_emits_map_select_and_find
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      require :seq
+
+      function :pick do |items|
+        doc "First even item."
+        items.find do |item|
+          item % 2 == 0
+        end
+      end
+    RURI
+
+    assert_includes output, "(require 'seq)"
+    assert_includes output, <<-'ELISP'.chomp
+  (seq-find
+    (lambda (ruri--local-item)
+      (equal
+        (mod ruri--local-item 2)
+        0))
+    ruri--local-items)
+    ELISP
+  end
 end

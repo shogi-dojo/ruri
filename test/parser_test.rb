@@ -943,6 +943,287 @@ end')
     assert_equal 1, diag.line
   end
 
+  def test_parses_begin_rescue_with_conditions_binding_and_else
+    function = parse(<<~RURI).first
+      function :safe do |a, b|
+        begin
+          el.message("%S", a)
+        rescue :arith_error => problem
+          el.message("math")
+        rescue
+          el.message("other")
+        else
+          el.message("ok")
+        end
+      end
+    RURI
+
+    rescue_form = function.body.first.expression
+    assert_instance_of Ruri::Forms::Rescue, rescue_form
+    assert_equal "ruri--local-problem", rescue_form.var
+    assert_equal 2, rescue_form.clauses.length
+    assert_equal ["arith-error"], rescue_form.clauses[0][0]
+    assert_equal ["error"], rescue_form.clauses[1][0]
+    assert_equal 1, rescue_form.body.length
+    assert_equal 1, rescue_form.else_body.length
+  end
+
+  def test_parses_catch_and_throw_with_symbol_tags
+    function = parse(<<~RURI).first
+      function :seek do |limit|
+        found = catch(:found_value) do
+          throw :found_value, limit
+        end
+        el.message("%S", found)
+      end
+    RURI
+
+    catch_form = function.body.first.value
+    assert_instance_of Ruri::Forms::Catch, catch_form
+    assert_equal "found-value", catch_form.tag
+    throw_form = catch_form.body.first.expression
+    assert_instance_of Ruri::Forms::Throw, throw_form
+    assert_equal "found-value", throw_form.tag
+    assert_equal "ruri--local-limit", throw_form.value.name
+  end
+
+  def test_parses_break_next_and_return
+    function = parse(<<~RURI).first
+      function :scan do |cap|
+        total = 0
+        while total < cap
+          total = total + 1
+          break if total == 3
+        end
+        list(1, 0, 2).each do |item|
+          next if item == 0
+        end
+        return total
+      end
+    RURI
+
+    loop_form = function.body[1]
+    assert_instance_of Ruri::Forms::Loop, loop_form
+    assert_instance_of Ruri::Forms::Break, loop_form.body.last.then_body.first
+    each_form = function.body[2]
+    assert_instance_of Ruri::Forms::Next, each_form.body.first.then_body.first
+    assert_instance_of Ruri::Forms::Return, function.body[3]
+    assert_equal "ruri--local-total", function.body[3].value.name
+  end
+
+  def test_rejects_break_outside_loop
+    diag = single_diagnostic(<<~RURI)
+      function :stray do
+        break
+      end
+    RURI
+
+    assert_match(/`break` is only allowed inside while, until, or each/, diag.message)
+    assert_equal 2, diag.line
+  end
+
+  def test_rejects_break_crossing_fn_boundary
+    diag = single_diagnostic(<<~RURI)
+      command :outer do
+        interactive
+        while true
+          callback = fn do
+            break
+          end
+          el.identity(callback)
+        end
+      end
+    RURI
+
+    assert_match(/`break` cannot cross a fn boundary/, diag.message)
+    assert_equal 5, diag.line
+  end
+
+  def test_rejects_exit_with_multiple_values
+    diags = diagnostics_of(<<~RURI)
+      command :multi do
+        interactive
+        while true
+          break 1, 2
+        end
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/break takes at most one value/, diags[0].message)
+  end
+
+  def test_parses_map_select_and_find_iteration
+    command = parse(<<~RURI).first
+      command :iter_cmd do
+        interactive
+        doubled = list(1, 2).map do |item|
+          item * 2
+        end
+        evens = list(1, 2).select do |item|
+          item % 2 == 0
+        end
+        first = list(1, 2).find do |item|
+          item > 0
+        end
+        el.identity(list(doubled, evens, first))
+      end
+    RURI
+
+    names = command.body.map { |form| form.class.name.split("::").last }
+    assert_equal ["Interactive", "LocalWrite", "LocalWrite", "LocalWrite", "Call"], names
+    doubled = command.body[1].value
+    assert_instance_of Ruri::Forms::Iteration, doubled
+    assert_equal "map", doubled.name
+    assert_equal "ruri--local-item", doubled.parameter
+    assert_equal "select", command.body[2].value.name
+    assert_equal "find", command.body[3].value.name
+  end
+
+  def test_rejects_malformed_iteration_blocks
+    diags = diagnostics_of(<<~RURI)
+      command :bad_iter do
+        interactive
+        el.identity(list(1).map(2) { nil })
+        list(1).map
+        list(1, 2).map do |first, second|
+          first
+        end
+      end
+    RURI
+
+    assert_equal 3, diags.size
+    assert_match(/map does not take call arguments/, diags[0].message)
+    assert_match(/map requires a block/, diags[1].message)
+    assert_match(/map requires exactly one block parameter/, diags[2].message)
+  end
+
+  def test_rejects_malformed_catch_and_throw
+    diags = diagnostics_of(<<~RURI)
+      function :bad do
+        catch(:a)
+        catch
+        throw :a
+        throw :a, 1, 2
+        throw "text", 1
+      end
+    RURI
+
+    assert_equal 5, diags.size
+    assert_match(/catch requires a do\.\.\.end block/, diags[0].message)
+    assert_match(/catch requires a do\.\.\.end block/, diags[1].message)
+    assert_match(/throw requires a tag symbol and a value expression/, diags[2].message)
+    assert_match(/throw requires a tag symbol and a value expression/, diags[3].message)
+    assert_match(/literal symbol argument required/, diags[4].message)
+  end
+
+  def test_rescue_variable_is_readable_after_the_block
+    function = parse(<<~RURI).first
+      function :leaky do
+        begin
+          el.message("body")
+        rescue => problem
+          el.message("caught")
+        end
+        el.message("%S", problem)
+      end
+    RURI
+
+    trailing = function.body.last
+    assert_equal "ruri--local-problem", trailing.arguments[1].name
+  end
+
+  def test_rejects_begin_without_rescue_or_ensure
+    diag = single_diagnostic(<<~RURI)
+      function :bare do
+        begin
+          el.message("x")
+        end
+      end
+    RURI
+
+    assert_match(/begin requires a rescue or ensure clause/, diag.message)
+    assert_equal 2, diag.line
+  end
+
+  def test_rejects_non_symbol_rescue_condition
+    diag = single_diagnostic(<<~RURI)
+      function :typed do
+        begin
+          el.message("x")
+        rescue 1
+          el.message("caught")
+        end
+      end
+    RURI
+
+    assert_match(/literal symbol argument required/, diag.message)
+    assert_equal 4, diag.line
+  end
+
+  def test_rejects_invalid_rescue_condition_name
+    diag = single_diagnostic(<<~RURI)
+      function :typed do
+        begin
+          el.message("x")
+        rescue :Not_A_Condition
+          el.message("caught")
+        end
+      end
+    RURI
+
+    assert_match(/invalid rescue condition `Not_A_Condition`/, diag.message)
+  end
+
+  def test_rejects_mismatched_rescue_variables
+    diag = single_diagnostic(<<~RURI)
+      function :mixed do
+        begin
+          el.message("x")
+        rescue :arith_error => first
+          el.message("math")
+        rescue => second
+          el.message("other")
+        end
+      end
+    RURI
+
+    assert_match(/all rescue clauses must bind the same variable name/, diag.message)
+  end
+
+  def test_parses_begin_ensure_with_and_without_rescue
+    definitions = parse(<<~RURI)
+      function :guarded do
+        begin
+          el.message("work")
+        ensure
+          el.message("cleanup")
+        end
+      end
+
+      function :both do |a|
+        begin
+          el.message("%S", a)
+        rescue :arith_error
+          el.message("math")
+        ensure
+          el.message("cleanup")
+        end
+      end
+    RURI
+
+    plain = definitions[0].body.first.expression
+    assert_instance_of Ruri::Forms::Ensure, plain
+    assert_equal 1, plain.body.length
+    assert_equal 1, plain.ensure_body.length
+
+    composed = definitions[1].body.first.expression
+    assert_instance_of Ruri::Forms::Ensure, composed
+    assert_equal 1, composed.body.length
+    assert_instance_of Ruri::Forms::Rescue, composed.body.first
+    assert_equal 1, composed.body.first.clauses.length
+  end
+
   def test_rejects_nested_command
     diag = single_diagnostic('command :a do
   interactive

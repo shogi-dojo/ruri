@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.10
+# Ruri language contract — version 0.11
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.10: every construct below is supported,
+is the exact scope of version 0.11: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -36,6 +36,9 @@ everything else is rejected with a source position.
 | `variable_local :name [, value] [, "doc"]` | Emits `(defvar-local name [value] ["doc"])`, declaring a variable that becomes buffer-local whenever it is set. Accepts the same arguments as `variable`. |
 | `require :name`, `provide :name` | Top-level only; emit `(require 'name)` and `(provide 'name)`, keeping source order among definitions. |
 | `interactive "P"` | Emits `(interactive "P")`, or plain `(interactive)` without an argument. Exactly once in each command body, directly after the optional docstring. The spec is at most one literal string, read by Emacs at invocation time (`"P"` raw prefix, `"p"` numeric prefix, `"r"` region, `"sPrompt: "` string, and so on); no block. The spec is never evaluated as Ruri code. |
+| `begin … rescue [:cond, …] [=> var] … else … end` | Lowers to `condition-case`. Conditions are literal symbols normalized to Elisp condition names (`:arith_error` → `arith-error`); a bare `rescue` catches the `error` condition. Every clause may bind the same optional `=> var` — one binding, hygienic like other locals, readable in the handlers and (matching Ruby) after the block. `else` becomes a `(:success …)` handler whose value wins when nothing is raised. Valid as a statement or as the final value of a definition. |
+| `begin … [rescue …] ensure … end` | The `ensure` clause lowers to `unwind-protect`: cleanup always runs — including on the error path — and the result is the body's (or handler's) value, never the cleanup's. With both clauses the rescue form nests inside the ensure form. |
+| `catch(:tag) do … end`, `throw :tag, value` | Nonlocal exits with quoted symbol tags: `(catch 'tag …)` and `(throw 'tag value)`. The tag is an unevaluated literal symbol; the catch returns the thrown value, or its last body form's value when nothing is thrown. Throws may cross loops, `condition-case`, and cleanup forms. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
 | `el.message("value: %s", el.buffer_name)` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
@@ -57,6 +60,9 @@ everything else is rejected with a source position.
 | `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`, `-a`, `+a` | Arithmetic lowered to `+`, `-`, `*`, `/`, `mod`, `expt`, unary `-`, and `identity`. Operand and division behavior follows Emacs Lisp. |
 | `while condition … end`, `until condition … end` | Repeatedly executes the body. `until` lowers to `while` with a negated condition. |
 | `items.each do \|item\| … end` | Iterates for side effects using `mapc` and a lexical lambda. Exactly one required block parameter is allowed. The collection may be any supported expression. |
+| `items.map do \|item\| … end`, `items.select do \|item\| … end`, `items.find do \|item\| … end` | Value-producing iteration lowering to `mapcar`, `seq-filter`, and `seq-find`. The block's final expression maps, keeps, or tests each element. Exactly one required block parameter; `select` and `find` require `require :seq` in the source file. |
+| `break [value]`, `next [value]` | Exits the enclosing `while`, `until`, `.each`, `.map`, `.select`, or `.find` block through a compiler-generated catch tag: `next` ends one iteration (its value is that element's result in the iteration forms), `break` unwinds the whole loop with the value as its result. Must sit inside the loop, not across an `fn` boundary. Loops without exits emit no extra code. |
+| `return [value]` | Returns from the innermost enclosing `command`, `function`, or `fn` body — a `fn` captures its own `return`, matching Ruby lambda semantics. Implemented with a catch tag wrapped around that body only when a `return` is present. |
 | Comments and whitespace | Accepted according to Ruby syntax (`#` line comments, `=begin`/`=end` block comments); no effect on semantics. |
 
 ## Emacs Lisp calls
@@ -138,12 +144,15 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
   particular, `/` follows Emacs integer and floating-point division rules;
   string concatenation remains `el.concat(...)`.
 - `while` and `until` accept any supported expression as their condition and
-  normal Ruri statements in their body. `break`, `next`, and `redo` are not
-  yet supported.
-- `.each` is the one permitted ordinary explicit receiver form. It is valid as
-  a statement, accepts no call arguments, requires exactly one positional
-  block parameter, and lowers to `mapc`. Its parameter is hygienic and scoped
-  to the block; other surrounding locals are captured and may be mutated.
+  normal Ruri statements in their body. `break` and `next` are allowed in
+  the body and lower to throws against compiler-generated catch tags;
+  `redo` remains rejected.
+- `.each` is the one permitted ordinary explicit receiver form for
+  side-effecting iteration. It is valid as a statement, accepts no call
+  arguments, requires exactly one positional block parameter, and lowers to
+  `mapc`. Its parameter is hygienic and scoped to the block; other
+  surrounding locals are captured and may be mutated. `.map`, `.select`,
+  and `.find` are the value-producing counterparts; see the construct table.
 
 ### Function values
 
@@ -254,6 +263,10 @@ Everything outside the table above, including but not limited to:
   `fn`, `function`, `.each`, and `command` accept the block parameters
   described above; `with_current_buffer` and `el.*` accept only
   parameterless blocks; `insert` does not accept a block.
+- `redo` and `retry`; `break`/`next` placement crossing an `fn` boundary;
+  non-string `interactive` specifications; rescue conditions that are not
+  literal symbols; rescue clauses binding different variable names; a
+  `begin` block with neither a rescue nor an ensure clause.
 - Executable top-level expressions: a `.ruri` file may contain only
   definitions and declarations — `command`, `function`, `variable`,
   `variable_local`, `constant`, `custom`, `require`, and `provide`
@@ -290,8 +303,8 @@ Generated Lisp (`examples/hello.el`):
 
 ## Reserved for later versions
 
-Nested quasiquotation, loop exits, and a raw Lisp escape hatch remain out
-of scope.
+Nested quasiquotation, a raw Lisp escape hatch, and loop escapes beyond
+`break` and `next` remain out of scope.
 
 ## Path toward broad Elisp coverage
 
@@ -314,8 +327,11 @@ structure safely:
 4. Parameters and interactive commands; v0.10 provides optional and rest
    parameters for functions and lambdas, command parameters, and
    interactive string specifications with entry-time parameter defaults.
-5. Error handling and nonlocal exits (`condition-case`, `unwind-protect`,
-   `catch`, `throw`) remain future work.
+5. Error handling, nonlocal exits, and value-producing iteration; v0.11
+   provides `begin`/`rescue`/`else` (condition-case), `ensure`
+   (unwind-protect), `catch`/`throw` with symbol tags, `break`, `next`,
+   `return`, and `.map`/`.select`/`.find` lowering to mapcar and the seq
+   functions.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still

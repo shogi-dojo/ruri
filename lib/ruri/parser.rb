@@ -31,6 +31,9 @@ module Ruri
       @definitions = []
       @seen_names = {}
       @seen_variable_names = {}
+      # Lexical placement stack for break/next/return: :fn for definition
+      # and lambda bodies, :loop for while/until/each bodies.
+      @exit_scopes = []
     end
 
     def parse
@@ -133,7 +136,7 @@ module Ruri
       when Prism::InterpolatedSymbolNode
         [false, error(node.location, "symbol interpolation is not supported in v0")]
       else
-        [false, error(node.location, "command requires exactly one literal symbol argument")]
+        [false, error(node.location, "literal symbol argument required")]
       end
     end
 
@@ -209,7 +212,9 @@ module Ruri
       parameters = parse_block_parameters(node.block, "command")
       return unless parameters
 
-      body = with_local_scope(node.block, parameters.names) { parse_command_body(node.block) }
+      body = with_local_scope(node.block, parameters.names) do
+        with_exit_scope(:definition) { parse_command_body(node.block) }
+      end
       @definitions << Forms::Command.new(
         source_name: source_name,
         name: lisp_name,
@@ -253,7 +258,7 @@ module Ruri
         statements = statements[1..]
       end
       body = with_local_scope(node.block, parameters.names) do
-        parse_value_body(statements)
+        with_exit_scope(:definition) { parse_value_body(statements) }
       end
       body = [docstring] + body if docstring
       @definitions << Forms::FunctionDefinition.new(
@@ -509,6 +514,12 @@ module Ruri
       if node.is_a?(Prism::LocalVariableWriteNode) && !shadowed.include?(node.name.to_s)
         names[node.name.to_s] = true
       end
+      # `rescue ... => var` binds a local visible in the handlers and,
+      # matching Ruby, after the begin block.
+      if node.is_a?(Prism::RescueNode) && node.reference &&
+         !shadowed.include?(node.reference.name.to_s)
+        names[node.reference.name.to_s] = true
+      end
       if scoped_block_call?(node)
         parameter_names = raw_block_parameter_names(node.block)
         node.child_nodes.each do |child|
@@ -544,9 +555,7 @@ module Ruri
       interactive_problem_reported = false
       docstring_seen = false
       statements.each_with_index do |stmt, index|
-        if stmt.is_a?(Prism::LocalVariableWriteNode) ||
-           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
-           stmt.is_a?(Prism::WhileNode) || stmt.is_a?(Prism::UntilNode)
+        if structured_statement?(stmt)
           form = parse_structured_statement(stmt)
           forms << form if form
           next
@@ -560,8 +569,8 @@ module Ruri
           forms << form if form
           next
         end
-        if stmt.name == :each && stmt.receiver
-          form = parse_each(stmt)
+        if %i[each map select find].include?(stmt.name) && stmt.receiver
+          form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next
         end
@@ -604,6 +613,14 @@ module Ruri
           end
         when :assign
           if (form = parse_assign_statement(stmt))
+            forms << form
+          end
+        when :catch
+          if (form = parse_catch(stmt))
+            forms << form
+          end
+        when :throw
+          if (form = parse_throw(stmt))
             forms << form
           end
         else
@@ -716,6 +733,162 @@ module Ruri
       Forms::Docstring.new(text: text)
     end
 
+    # Statements handled structurally in every body context: locals,
+    # conditionals, loops, begin/rescue blocks, and exit statements.
+    def structured_statement?(node)
+      node.is_a?(Prism::LocalVariableWriteNode) ||
+        node.is_a?(Prism::IfNode) || node.is_a?(Prism::UnlessNode) ||
+        node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode) ||
+        node.is_a?(Prism::BeginNode) ||
+        node.is_a?(Prism::BreakNode) || node.is_a?(Prism::NextNode) ||
+        node.is_a?(Prism::ReturnNode)
+    end
+
+    # `begin ... rescue [:cond, ...] [=> var] ... [else ...] end` lowers to
+    # condition-case, and `begin ... [rescue ...] end ... ensure ... end`
+    # to unwind-protect. The error variable is an unevaluated binding
+    # position, so these are typed forms with hygienic names rather than
+    # el.* calls. A bare `rescue` catches the Elisp `error` condition;
+    # `else` becomes a (:success ...) handler. With both clauses, the
+    # rescue form nests inside the ensure form.
+    def parse_begin_node(node)
+      unless node.rescue_clause || node.ensure_clause
+        error(node.location, "begin requires a rescue or ensure clause")
+        return nil
+      end
+
+      rescue_form = nil
+      if node.rescue_clause
+        var = nil
+        clauses = []
+        clause = node.rescue_clause
+        while clause
+          conditions = []
+          clause.exceptions.each do |exception|
+            ok, name = extract_symbol(exception)
+            return nil unless ok
+
+            unless name.match?(NAME_RE) && !%w[t nil].include?(name)
+              error(exception.location,
+                    "invalid rescue condition `#{name}`; must match [a-z][a-z0-9_]*")
+              return nil
+            end
+            conditions << name.tr("_", "-")
+          end
+          conditions = ["error"] if conditions.empty?
+
+          if clause.reference
+            source_name = clause.reference.name.to_s
+            unless source_name.match?(NAME_RE) && source_name != "t"
+              error(clause.reference.location,
+                    "invalid rescue variable name `#{source_name}`")
+              return nil
+            end
+            clause_var = generated_local_name(source_name)
+            if var && var != clause_var
+              error(clause.reference.location,
+                    "all rescue clauses must bind the same variable name")
+              return nil
+            end
+            var = clause_var
+          end
+
+          body = parse_value_body(clause.statements&.body || [])
+          clauses << [conditions, body]
+          clause = clause.subsequent
+        end
+
+        else_body = []
+        if node.else_clause
+          else_body = parse_value_body(node.else_clause.statements&.body || [])
+        end
+        protected = parse_value_body(node.statements&.body || [])
+        rescue_form = Forms::Rescue.new(var: var, clauses: clauses,
+                                        else_body: else_body, body: protected)
+      end
+
+      if node.ensure_clause
+        ensure_body = parse_value_body(node.ensure_clause.statements&.body || [])
+        inner = rescue_form || parse_value_body(node.statements&.body || [])
+        return Forms::Ensure.new(body: Array(inner), ensure_body: ensure_body)
+      end
+      rescue_form
+    end
+
+    # `catch(:tag) do … end` and `throw :tag, value` lower to Elisp catch
+    # and throw with a quoted, unevaluated tag symbol. The tag position is
+    # not an evaluated expression, so both are typed forms.
+    def parse_throw(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `throw` with explicit receiver")
+        return nil
+      end
+      if node.block
+        error(node.location, "throw does not take a block")
+        return nil
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "throw does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 2
+        error(node.location, "throw requires a tag symbol and a value expression")
+        return nil
+      end
+
+      ok, tag = exit_tag_name(positional[0], "throw")
+      return nil unless ok
+
+      value = parse_expression(positional[1])
+      return nil unless value
+
+      Forms::Throw.new(tag: tag, value: value)
+    end
+
+    # Shared tag handling for catch/throw: one literal symbol in the
+    # unevaluated tag position, normalized from snake_case. Returns
+    # [ok, normalized_name].
+    def exit_tag_name(node, construct)
+      ok, source_name = extract_symbol(node)
+      return [false, nil] unless ok
+
+      unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+        error(node.location,
+              "invalid #{construct} tag `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return [false, nil]
+      end
+      [true, source_name.tr("_", "-")]
+    end
+
+    def parse_catch(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `catch` with explicit receiver")
+        return nil
+      end
+      unless node.block
+        error(node.location, "catch requires a do...end block")
+        return nil
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "catch does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 1
+        error(node.location, "catch requires exactly one literal symbol tag")
+        return nil
+      end
+
+      ok, tag = exit_tag_name(positional[0], "catch")
+      return nil unless ok
+
+      body = parse_value_body(node.block.body&.body || [])
+      Forms::Catch.new(tag: tag, body: body)
+    end
+
     def parse_structured_statement(node)
       case node
       when Prism::LocalVariableWriteNode
@@ -728,9 +901,74 @@ module Ruri
         parse_loop(node, negated: false)
       when Prism::UntilNode
         parse_loop(node, negated: true)
+      when Prism::BeginNode
+        parse_begin_node(node)
+      when Prism::BreakNode
+        parse_break_statement(node)
+      when Prism::NextNode
+        parse_next_statement(node)
+      when Prism::ReturnNode
+        parse_return_statement(node)
       else
         unsupported(node)
       end
+    end
+
+    # `break`, `next`, and `return` lower to throws against
+    # compiler-generated catch tags. break/next must sit directly inside a
+    # loop in the same fn; crossing an fn boundary (a nested fn block)
+    # changes the target in Ruby and is rejected. return targets the
+    # innermost definition, matching Ruby's lambda semantics.
+    def parse_break_statement(node)
+      if (problem = exit_placement_error(node, "break"))
+        error(node.location, problem)
+      end
+      Forms::Break.new(value: parse_exit_value(node, "break"))
+    end
+
+    def parse_next_statement(node)
+      if (problem = exit_placement_error(node, "next"))
+        error(node.location, problem)
+      end
+      Forms::Next.new(value: parse_exit_value(node, "next"))
+    end
+
+    def parse_return_statement(node)
+      Forms::Return.new(value: parse_exit_value(node, "return"))
+    end
+
+    def parse_exit_value(node, name)
+      args = node.arguments&.arguments || []
+      if args.empty?
+        nil
+      elsif args.one?
+        parse_expression(args.first)
+      else
+        error(node.location, "#{name} takes at most one value")
+        nil
+      end
+    end
+
+    # Returns a diagnostic message when the exit statement's placement
+    # cannot be lowered, or nil when it is fine.
+    def exit_placement_error(_node, name)
+      nearest = @exit_scopes.reverse.find do |kind|
+        kind == :loop || kind == :fn || kind == :definition
+      end
+      if nearest == :loop
+        nil
+      elsif nearest == :fn
+        "`#{name}` cannot cross a fn boundary; use it directly inside while, until, or each"
+      else
+        "`#{name}` is only allowed inside while, until, or each"
+      end
+    end
+
+    def with_exit_scope(kind)
+      @exit_scopes << kind
+      yield
+    ensure
+      @exit_scopes.pop
     end
 
     def parse_local_write(node)
@@ -785,27 +1023,37 @@ module Ruri
 
     def parse_loop(node, negated:)
       condition = parse_expression(node.predicate)
-      body = parse_buffer_statements(node.statements&.body || [])
+      body = with_exit_scope(:loop) do
+        parse_buffer_statements(node.statements&.body || [])
+      end
       return nil unless condition
 
       Forms::Loop.new(condition: condition, body: body, negated: negated)
     end
 
     def parse_each(node)
+      parse_block_iteration(node, :each)
+    end
+
+    # Shared shape for `.each`, `.map`, `.select`, and `.find`: a receiver
+    # expression, no call arguments, and exactly one required block
+    # parameter. Only the block body differs — each is statement-scoped,
+    # the iteration forms parse it for value.
+    def parse_block_iteration(node, name)
       if node.arguments
-        error(node.location, "each does not take call arguments")
+        error(node.location, "#{name} does not take call arguments")
         return nil
       end
       unless node.block
-        error(node.location, "each requires a block")
+        error(node.location, "#{name} requires a block")
         return nil
       end
 
-      parameters = parse_block_parameters(node.block, "each")
+      parameters = parse_block_parameters(node.block, name.to_s)
       return nil unless parameters
 
       unless parameters.required.one? && parameters.optionals.empty? && parameters.rest.nil?
-        error(node.block.location, "each requires exactly one block parameter")
+        error(node.block.location, "#{name} requires exactly one block parameter")
         return nil
       end
 
@@ -815,15 +1063,30 @@ module Ruri
       previous_names = @local_names
       begin
         @local_names = ((@local_names || []) + parameters.names).uniq
-        body = parse_buffer_statements(node.block.body&.body || [])
+        body = with_exit_scope(:loop) do
+          if name == :each
+            parse_buffer_statements(node.block.body&.body || [])
+          else
+            parse_value_body(node.block.body&.body || [])
+          end
+        end
       ensure
         @local_names = previous_names
       end
-      Forms::Each.new(
-        collection: collection,
-        parameter: generated_local_name(parameters.required.first),
-        body: body
-      )
+      if name == :each
+        Forms::Each.new(
+          collection: collection,
+          parameter: generated_local_name(parameters.required.first),
+          body: body
+        )
+      else
+        Forms::Iteration.new(
+          name: name.to_s,
+          collection: collection,
+          parameter: generated_local_name(parameters.required.first),
+          body: body
+        )
+      end
     end
 
     def parse_elisp_call(node)
@@ -890,6 +1153,8 @@ module Ruri
                        "parentheses must contain exactly one expression")
         end
         parse_expression(expressions.first)
+      when Prism::BeginNode
+        parse_begin_node(node)
       when Prism::CallNode
         return parse_lambda(node) if unqualified_call?(node, :fn)
         return parse_function_reference(node) if unqualified_call?(node, :function)
@@ -899,12 +1164,17 @@ module Ruri
         return parse_quasiquote(node) if unqualified_call?(node, :quasiquote)
         return parse_var_read(node) if unqualified_call?(node, :var)
         return parse_keyword(node) if unqualified_call?(node, :keyword)
+        return parse_catch(node) if unqualified_call?(node, :catch)
+        return parse_throw(node) if unqualified_call?(node, :throw)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
         end
         return parse_operator(node) if operator_call?(node)
         return parse_elisp_call(node) if elisp_call?(node)
+        if %i[map select find].include?(node.name) && node.receiver && node.block
+          return parse_block_iteration(node, node.name)
+        end
         # Ruby parses a bare name used before its first textual assignment as
         # a zero-argument call. Ruri locals have command-wide lexical scope,
         # so reinterpret that precise shape when a matching assignment exists.
@@ -1057,7 +1327,9 @@ module Ruri
       previous_names = @local_names
       begin
         @local_names = ((@local_names || []) + parameters.names).uniq
-        body = parse_value_body(node.block.body&.body || [])
+        body = with_exit_scope(:fn) do
+          parse_value_body(node.block.body&.body || [])
+        end
       ensure
         @local_names = previous_names
       end
@@ -1389,7 +1661,9 @@ module Ruri
     def value_expression_statement?(node)
       return false if node.is_a?(Prism::LocalVariableWriteNode) ||
                       node.is_a?(Prism::IfNode) || node.is_a?(Prism::UnlessNode) ||
-                      node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode)
+                      node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode) ||
+                      node.is_a?(Prism::BreakNode) ||
+                      node.is_a?(Prism::NextNode) || node.is_a?(Prism::ReturnNode)
       return true unless node.is_a?(Prism::CallNode)
       return false if node.name == :each && node.receiver
       return false if node.receiver.nil? &&
@@ -1402,9 +1676,7 @@ module Ruri
     def parse_buffer_statements(statements)
       forms = []
       statements.each do |stmt|
-        if stmt.is_a?(Prism::LocalVariableWriteNode) ||
-           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
-           stmt.is_a?(Prism::WhileNode) || stmt.is_a?(Prism::UntilNode)
+        if structured_statement?(stmt)
           form = parse_structured_statement(stmt)
           forms << form if form
           next
@@ -1418,8 +1690,8 @@ module Ruri
           forms << form if form
           next
         end
-        if stmt.name == :each && stmt.receiver
-          form = parse_each(stmt)
+        if %i[each map select find].include?(stmt.name) && stmt.receiver
+          form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next
         end
@@ -1448,6 +1720,14 @@ module Ruri
           end
         when :assign
           if (form = parse_assign_statement(stmt))
+            forms << form
+          end
+        when :catch
+          if (form = parse_catch(stmt))
+            forms << form
+          end
+        when :throw
+          if (form = parse_throw(stmt))
             forms << form
           end
         else
