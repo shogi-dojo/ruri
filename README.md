@@ -238,7 +238,7 @@ batch Emacs.
 
 ## Language
 
-The exact v0.10 contract — supported constructs, name rules, expression
+The exact v0.11 contract — supported constructs, name rules, expression
 semantics, and everything explicitly rejected — is
 [`docs/language.md`](docs/language.md). Top-level definitions include commands,
 noninteractive functions with required, optional, and rest parameters and
@@ -249,7 +249,12 @@ parameters and `interactive` specifications (such as `"P"` for the raw prefix
 argument), support `with_current_buffer`, `insert`, lexical locals,
 conditionals, and explicit
 `el.function_name(...)` calls with optional body blocks, lexical `fn` values,
-and named `function(:name)` references. Expressions include lists, cons cells,
+and named `function(:name)` references. `begin`/`rescue`/`else` lower to
+`condition-case`, `ensure` to `unwind-protect`, `catch`/`throw` carry quoted
+symbol tags, `break`/`next`/`return` compile to catch tags only where they
+are used, and `.map`/`.select`/`.find` provide value-producing iteration
+(the `seq`-based forms ask for an explicit `require :seq`). Expressions
+include lists, cons cells,
 literal quote, quasiquote with unquote and splicing, Ruby operators, loops,
 and `var :name` reads of dynamic Emacs Lisp variables. Every rejection names
 the offending source position.
@@ -313,6 +318,6 @@ boundary.
 ## Status & limitations
 
 This is an early vertical slice. Not supported (by design): nested
-quasiquotation, loop exits, string interpolation, heredocs, nested commands,
+quasiquotation, string interpolation, heredocs, nested commands,
 a custom major mode, file watchers, byte-compile integration from the
 compiler, and everything else listed in the contract's rejection section.
