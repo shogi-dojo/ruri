@@ -1567,4 +1567,42 @@ end')
     # makes correct: the new c binds only after the initializer runs.
     assert_equal "ruri--local-c", let_form.parameters.optionals.first.default.name
   end
+
+  def test_rejects_el_let_and_other_unevaluated_position_calls
+    diags = diagnostics_of(<<~RURI)
+      function :bindings do
+        el.let(list(list(:a, 1)), :a)
+      end
+
+      function :writes do
+        el.setq(:a, 1)
+      end
+
+      function :matches do
+        el.pcase(var(:value), list(:a))
+      end
+    RURI
+
+    assert_match(/el\.let takes bindings or names in unevaluated.*use the Ruri let form/,
+                 diags[0].message)
+    assert_match(/el\.setq takes bindings or names in unevaluated.*use assign\(:name, value\)/,
+                 diags[1].message)
+    assert_match(/el\.pcase takes bindings or names in unevaluated.*use conditionals/,
+                 diags[2].message)
+  end
+
+  def test_rejects_unevaluated_position_calls_at_any_arity
+    diags = diagnostics_of(<<~RURI)
+      function :bare do
+        el.cl_loop
+      end
+
+      function :bound do
+        el.when_let(list(list(:a, 1)))
+      end
+    RURI
+
+    assert_match(/el\.cl-loop takes bindings or names in unevaluated/, diags[0].message)
+    assert_match(/el\.when-let takes bindings or names in unevaluated/, diags[1].message)
+  end
 end

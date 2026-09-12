@@ -18,6 +18,25 @@ module Ruri
     }.freeze
     UNARY_OPERATORS = { :! => "not", :-@ => "-", :+@ => "identity" }.freeze
 
+    # Emacs Lisp forms that take bindings, patterns, or variable names in
+    # unevaluated positions. Through the generic el.* call path their
+    # arguments are emitted as evaluated calls and the generated Elisp
+    # fails only at runtime, so each name is rejected at compile time
+    # with a pointer to the Ruri construct that covers it.
+    UNEVALUATED_POSITION_CALLS = {
+      "let" => "use the Ruri let form",
+      "let-star" => "use the Ruri let form; it binds sequentially",
+      "setq" => "use assign(:name, value)",
+      "dolist" => "use collection.each do |item| ... end",
+      "cl-dolist" => "use collection.each do |item| ... end",
+      "pcase" => "Ruri cannot express pcase patterns; use conditionals",
+      "cl-loop" => "Ruri cannot express cl-loop clauses; use while, each, or let",
+      "cl-destructuring-bind" => "Ruri cannot express destructuring patterns",
+      "seq-let" => "Ruri cannot express destructuring patterns",
+      "when-let" => "bind with the Ruri let form and branch with if",
+      "if-let" => "bind with the Ruri let form and branch with if"
+    }.freeze
+
     class << self
       def parse(source, path:)
         new(source, path).parse
@@ -1159,6 +1178,14 @@ module Ruri
       unless source_name.match?(ELISP_CALL_NAME_RE)
         error(node.message_loc || node.location,
               "invalid el.* function name `#{source_name}`; use lowercase snake_case")
+        return nil
+      end
+
+      normalized_name = normalize_elisp_name(source_name)
+      if (guidance = UNEVALUATED_POSITION_CALLS[normalized_name])
+        error(node.message_loc || node.location,
+              "el.#{normalized_name} takes bindings or names in unevaluated " \
+              "positions and would only fail at runtime; #{guidance}")
         return nil
       end
 
