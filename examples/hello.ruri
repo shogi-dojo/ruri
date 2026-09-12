@@ -1,0 +1,6 @@
+command :hello_buffer do
+  interactive
+  with_current_buffer("*scratch*") do
+    insert("Hello from Ruby syntax!\n")
+  end
+end
