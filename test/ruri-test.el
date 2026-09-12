@@ -605,6 +605,31 @@
     ;; The loop form itself contributes no value.
     (should (null (ruri-test-times-value)))))
 
+(ert-deftest ruri-test/place-operations-mutate-in-emacs ()
+  (let* ((dir (make-temp-file "ruri places " t))
+         (source (expand-file-name "places.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_place_stack, nil\n"
+              "\n"
+              "function :ruri_test_place_ops do\n"
+              "  doc \"Typed places on forms, Elisp vars, and Ruri locals.\"\n"
+              "  cell = list(:a)\n"
+              "  el.setf(el.car(cell), 1)\n"
+              "  el.setf(:ruri_test_place_stack, list(1))\n"
+              "  el.push(2, :ruri_test_place_stack)\n"
+              "  popped = el.pop(:ruri_test_place_stack)\n"
+              "  n = 5\n"
+              "  el.cl_incf(n)\n"
+              "  el.cl_incf(n, 10)\n"
+              "  el.cl_decf(n)\n"
+              "  list(cell, var(:ruri_test_place_stack), popped, n)\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; setf through (car …) mutates the cons; push/pop and setf hit the
+    ;; Elisp variable without quoting it; cl-incf/cl-decf mutate a local.
+    (should (equal '((1) (1) 2 15) (ruri-test-place-ops)))
+    (should (equal '(1) ruri-test-place-stack))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

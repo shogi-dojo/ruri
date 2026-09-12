@@ -146,6 +146,12 @@ module Ruri
         body_has_exit?(form.body, klass, boundaries)
       when Forms::Call
         body_has_exit?(form.body, klass, boundaries)
+      when Forms::PlaceOperation
+        if form.place.is_a?(Forms::Call)
+          form_has_exit?(form.place, klass, boundaries)
+        else
+          false
+        end || form.arguments.any? { |argument| form_has_exit?(argument, klass, boundaries) }
       else
         false
       end
@@ -303,6 +309,9 @@ module Ruri
           collect_locals(statement.body, names, shadowed + statement.parameters.names)
         when Forms::Throw
           collect_expression_locals(statement.value, names, shadowed)
+        when Forms::PlaceOperation
+          collect_expression_locals(statement.place, names, shadowed) if statement.place.is_a?(Forms::Call)
+          statement.arguments.each { |argument| collect_expression_locals(argument, names, shadowed) }
         when Forms::Break, Forms::Next, Forms::Return
           collect_expression_locals(statement.value, names, shadowed) if statement.value
         when Forms::Call
@@ -356,6 +365,9 @@ module Ruri
         collect_expression_locals(expression.value, names, shadowed)
       when Forms::Let
         collect_locals(expression.body, names, shadowed + expression.parameters.names)
+      when Forms::PlaceOperation
+        collect_expression_locals(expression.place, names, shadowed) if expression.place.is_a?(Forms::Call)
+        expression.arguments.each { |argument| collect_expression_locals(argument, names, shadowed) }
       when Forms::Iteration
         collect_expression_locals(expression.collection, names, shadowed)
         collect_locals(expression.body, names, shadowed + [expression.parameter])
@@ -418,6 +430,8 @@ module Ruri
         lower_throw(statement)
       when Forms::Let
         lower_let(statement)
+      when Forms::PlaceOperation
+        lower_place_operation(statement)
       when Forms::Break
         lower_exit(statement, @break_tags.last)
       when Forms::Next
@@ -512,6 +526,8 @@ module Ruri
         lower_throw(expression)
       when Forms::Let
         lower_let(expression)
+      when Forms::PlaceOperation
+        lower_place_operation(expression)
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end
@@ -533,6 +549,25 @@ module Ruri
         Elisp.quote(Elisp.symbol(throw_form.tag)),
         lower_expression(throw_form.value)
       )
+    end
+
+    # Typed place operations lower with the place in its unevaluated
+    # position: (setf PLACE VALUE), (cl-incf PLACE [DELTA]), (pop PLACE),
+    # and push with its arguments reversed to (push VALUE PLACE). A
+    # variable or local place lowers to a bare symbol; a form place to
+    # the lowered call.
+    def lower_place_operation(operation)
+      place = case operation.place
+              when Forms::Call then lower_expression(operation.place)
+              else Elisp.symbol(operation.place.name)
+              end
+      values = operation.arguments.map { |argument| lower_expression(argument) }
+      items = if operation.name == "push"
+                [Elisp.symbol("push"), *values, place]
+              else
+                [Elisp.symbol(operation.name), place, *values]
+              end
+      Elisp.list(*items)
     end
 
     # `let` lowers to let*: the parser parsed each initializer with only

@@ -131,6 +131,15 @@ module Ruri
     # than Ruby's Integer#times.
     Times = Data.define(:count, :parameter, :body)
 
+    # Typed generalized-place assignment: el.setf, el.push, el.pop,
+    # el.cl_incf, and el.cl_decf. +place+ is an unevaluated position —
+    # a VarRead (Elisp variable symbol), LocalRead (Ruri local), or Call
+    # (an el.* form such as (car x)) — so these are typed forms rather
+    # than generic calls that would quote or evaluate the place. +name+
+    # is the normalized Elisp operator name; +arguments+ are the value
+    # expressions in Elisp argument order (push takes its value first).
+    PlaceOperation = Data.define(:name, :place, :arguments)
+
     # `begin/rescue[/else]` lowered to condition-case. +var+ is the hygienic
     # error-object binding shared by every clause, or nil. +clauses+ are
     # [conditions, body] pairs in source order; +conditions+ is a nonempty

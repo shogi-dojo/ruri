@@ -482,6 +482,39 @@ class LowererTest < Minitest::Test
     assert_equal "dotimes", break_catch.items[2].items.first.name
   end
 
+  def test_lowers_place_operations_with_unevaluated_places
+    function = parse(<<~RURI).first
+      function :mutate do
+        cell = list(:a)
+        el.setf(el.car(cell), 1)
+        el.setf(:hook_var, 2)
+        el.push(3, :hook_var)
+        el.cl_incf(cell, 4)
+        el.pop(:hook_var)
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first.items[3]
+    setf_form = lowered.items[3]
+    assert_equal "setf", setf_form.items.first.name
+    assert_equal "car", setf_form.items[1].items.first.name
+    assert_equal "ruri--local-cell", setf_form.items[1].items[1].name
+    assert_equal 1, setf_form.items[2].value
+    symbol_setf = lowered.items[4]
+    assert_equal "hook-var", symbol_setf.items[1].name
+    push_form = lowered.items[5]
+    assert_equal "push", push_form.items.first.name
+    assert_equal 3, push_form.items[1].value
+    assert_equal "hook-var", push_form.items[2].name
+    incf_form = lowered.items[6]
+    assert_equal "cl-incf", incf_form.items.first.name
+    assert_equal "ruri--local-cell", incf_form.items[1].name
+    assert_equal 4, incf_form.items[2].value
+    pop_form = lowered.items[7]
+    assert_equal "pop", pop_form.items.first.name
+    assert_equal "hook-var", pop_form.items[1].name
+  end
+
   def test_return_wraps_the_defun_body_in_a_catch
     function = parse(<<~RURI).first
       function :early do

@@ -37,6 +37,23 @@ module Ruri
       "if-let" => "bind with the Ruri let form and branch with if"
     }.freeze
 
+    # Emacs Lisp place-taking operators routed into the typed
+    # PlaceOperation form. +args+ bounds the argument count and +place+
+    # says which position is the unevaluated place (push takes its value
+    # first, the place last; everything else places first).
+    PLACE_OPERATORS = {
+      "setf" => { args: [2, 2], place: :first,
+                  arity: "el.setf takes one place and one value" },
+      "push" => { args: [2, 2], place: :last,
+                  arity: "el.push takes one value and one place" },
+      "pop" => { args: [1, 1], place: :only,
+                 arity: "el.pop takes one place" },
+      "cl-incf" => { args: [1, 2], place: :first,
+                     arity: "el.cl-incf takes a place and an optional delta" },
+      "cl-decf" => { args: [1, 2], place: :first,
+                     arity: "el.cl-decf takes a place and an optional delta" }
+    }.freeze
+
     class << self
       def parse(source, path:)
         new(source, path).parse
@@ -1194,6 +1211,7 @@ module Ruri
               "positions and would only fail at runtime; #{guidance}")
         return nil
       end
+      return parse_place_operation(node, normalized_name) if PLACE_OPERATORS.key?(normalized_name)
 
       arguments = node.arguments&.arguments || []
       parsed_arguments = arguments.map { |argument| parse_expression(argument) }
@@ -1210,6 +1228,65 @@ module Ruri
         arguments: parsed_arguments,
         body: body
       )
+    end
+
+    # el.setf, el.push, el.pop, el.cl_incf, and el.cl_decf take their
+    # place argument in an unevaluated position, so they become typed
+    # PlaceOperation forms instead of generic calls. The value arguments
+    # are ordinary expressions.
+    def parse_place_operation(node, name)
+      spec = PLACE_OPERATORS.fetch(name)
+      if node.block
+        error(node.location, "el.#{name} does not take a block")
+        return nil
+      end
+      arguments = node.arguments&.arguments || []
+      unless arguments.length.between?(*spec[:args])
+        error(node.location, spec[:arity])
+        return nil
+      end
+
+      place_node, value_nodes = case spec[:place]
+                                when :first then [arguments[0], arguments[1..]]
+                                when :last then [arguments[-1], arguments[0...-1]]
+                                else [arguments[0], []]
+                                end
+      place = parse_place(place_node, name)
+      return nil unless place
+
+      values = value_nodes.map { |value_node| parse_expression(value_node) }
+      return nil if values.any?(&:nil?)
+
+      Forms::PlaceOperation.new(name: name, place: place, arguments: values)
+    end
+
+    # A generalized place: an Elisp variable symbol (literal `:name`), a
+    # Ruri local read, `var(:name)`, or an el.* form such as el.car(x).
+    # Anything else is rejected at compile time rather than emitted as a
+    # setf that fails or misbehaves at runtime.
+    def parse_place(node, name)
+      if literal_symbol_node?(node)
+        ok, source_name = extract_symbol(node)
+        return nil unless ok
+
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(node.location,
+                "invalid #{name} place `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        return Forms::VarRead.new(source_name: source_name, name: source_name.tr("_", "-"))
+      end
+      if node.is_a?(Prism::CallNode) && node.receiver.nil? &&
+         node.arguments.nil? && node.block.nil? && local_reference_call?(node)
+        return parse_local_read(node)
+      end
+      # A name assigned earlier in the block parses as a variable read.
+      return parse_local_read(node) if node.is_a?(Prism::LocalVariableReadNode)
+      return parse_var_read(node) if unqualified_call?(node, :var)
+      return parse_expression(node) if elisp_call?(node)
+
+      error(node.location,
+            "#{name} place must be a variable symbol, a Ruri local, var(:name), or an el.* form")
     end
 
     def parse_expression(node)

@@ -1643,4 +1643,64 @@ end')
     assert_match(/unsupported expression/, diags[0].message)
     assert_match(/times requires exactly one block parameter/, diags[1].message)
   end
+
+  def test_parses_place_operations_with_symbol_local_and_form_places
+    function = parse(<<~RURI).first
+      function :mutate do
+        cell = list(:a)
+        el.setf(el.car(cell), 1)
+        el.setf(:hook_var, 2)
+        el.push(3, :hook_var)
+        el.cl_incf(cell)
+        el.cl_decf(cell, 2)
+        el.pop(:hook_var)
+        el.cl_incf(cell)
+      end
+    RURI
+
+    forms = function.body
+    setf_form = forms[1]
+    assert_instance_of Ruri::Forms::PlaceOperation, setf_form
+    assert_equal "setf", setf_form.name
+    assert_instance_of Ruri::Forms::Call, setf_form.place
+    assert_equal "car", setf_form.place.name
+    assert_equal 1, setf_form.arguments.first.value
+    assert_equal "hook-var", forms[2].place.name
+    assert_equal "push", forms[3].name
+    # push keeps Elisp argument order in the form: value first, place last.
+    assert_equal "hook-var", forms[3].place.name
+    assert_equal 3, forms[3].arguments.first.value
+    assert_instance_of Ruri::Forms::LocalRead, forms[4].place
+    assert_equal "ruri--local-cell", forms[4].place.name
+    assert_equal 2, forms[5].arguments.first.value
+    assert_empty forms[6].arguments
+  end
+
+  def test_rejects_invalid_places_and_arities
+    diags = diagnostics_of(<<~RURI)
+      function :bad_place do
+        el.setf("text", 1)
+      end
+
+      function :reserved_place do
+        el.setf(:t, 1)
+      end
+
+      function :bad_arity do
+        el.pop(:hook_var, 2)
+      end
+
+      function :no_block do
+        el.cl_incf(:hook_var) do
+          :x
+        end
+      end
+    RURI
+
+    assert_match(/setf place must be a variable symbol, a Ruri local, var\(:name\), or an el\.\* form/,
+                 diags[0].message)
+    assert_match(/invalid setf place `t`/, diags[1].message)
+    assert_match(/el\.pop takes one place/, diags[2].message)
+    assert_match(/el\.cl-incf does not take a block/, diags[3].message)
+  end
 end

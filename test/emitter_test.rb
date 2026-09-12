@@ -509,4 +509,22 @@ class EmitterTest < Minitest::Test
     (message "%d" ruri--local-i))
     ELISP
   end
+
+  def test_emits_place_operations_in_unevaluated_positions
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :mutate do
+        doc "Typed places."
+        cell = list(:a)
+        el.setf(el.car(cell), 1)
+        el.push(2, :hook_var)
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+    (setf
+      (car ruri--local-cell)
+      1)
+    (push 2 hook-var)
+    ELISP
+  end
 end
