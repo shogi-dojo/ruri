@@ -3,8 +3,9 @@
 # test/fixtures/org-fragtog-original.el).
 #
 # This is a semantic conversion, not byte-identical: define-minor-mode is
-# emulated with a defvar-local plus a toggle function, and the let*
-# bindings become sequential Ruri locals. Compile with:
+# emulated with a defvar-local plus a toggle function, and the original
+# let* bindings become a scoped Ruri let block (prev_frag in post_cmd)
+# plus sequential Ruri locals. Compile with:
 #   bundle exec ruby bin/ruri compile examples/org-fragtog.ruri --output org-fragtog.el
 
 require :org
@@ -46,42 +47,43 @@ end
 
 function :org_fragtog__post_cmd do
   doc "This function is executed by `post-command-hook' in `org-fragtog-mode'.\nIt handles toggling fragments depending on whether the cursor entered or exited\nthem."
-  prev_frag = var(:org_fragtog__prev_frag)
-  unless prev_frag
-    if var(:org_fragtog__prev_point)
-      prev_frag = (el.save_excursion do
-        el.goto_char(var(:org_fragtog__prev_point))
-        el.org_fragtog__cursor_frag
-      end)
-    end
-  end
-  prev_frag_start_pos = el.org_fragtog__frag_start(prev_frag)
-  cursor_frag = el.org_fragtog__cursor_frag
-  frag_same = el.org_fragtog__frag_start(cursor_frag) == prev_frag_start_pos
-  frag_changed = !frag_same
-  frag_at_prev_pos = prev_frag_start_pos && (el.save_excursion do
-    el.goto_char(prev_frag_start_pos)
-    el.org_fragtog__cursor_frag
-  end)
-  if frag_changed
-    assign :org_fragtog__prev_frag, cursor_frag
-    if frag_at_prev_pos && !el.org_fragtog__frag_enabled(frag_at_prev_pos)
-      el.org_fragtog__enable_frag(frag_at_prev_pos)
-    end
-    if var(:org_fragtog__timer)
-      el.cancel_timer(var(:org_fragtog__timer))
-      assign :org_fragtog__timer, nil
-    end
-    if cursor_frag
-      if var(:org_fragtog_preview_delay) > 0
-        assign :org_fragtog__timer,
-               el.run_with_idle_timer(var(:org_fragtog_preview_delay), nil, function(:org_fragtog__disable_frag), cursor_frag, true)
-      else
-        el.org_fragtog__disable_frag(cursor_frag)
+  let do |prev_frag = var(:org_fragtog__prev_frag)|
+    unless prev_frag
+      if var(:org_fragtog__prev_point)
+        prev_frag = (el.save_excursion do
+          el.goto_char(var(:org_fragtog__prev_point))
+          el.org_fragtog__cursor_frag
+        end)
       end
     end
+    prev_frag_start_pos = el.org_fragtog__frag_start(prev_frag)
+    cursor_frag = el.org_fragtog__cursor_frag
+    frag_same = el.org_fragtog__frag_start(cursor_frag) == prev_frag_start_pos
+    frag_changed = !frag_same
+    frag_at_prev_pos = prev_frag_start_pos && (el.save_excursion do
+      el.goto_char(prev_frag_start_pos)
+      el.org_fragtog__cursor_frag
+    end)
+    if frag_changed
+      assign :org_fragtog__prev_frag, cursor_frag
+      if frag_at_prev_pos && !el.org_fragtog__frag_enabled(frag_at_prev_pos)
+        el.org_fragtog__enable_frag(frag_at_prev_pos)
+      end
+      if var(:org_fragtog__timer)
+        el.cancel_timer(var(:org_fragtog__timer))
+        assign :org_fragtog__timer, nil
+      end
+      if cursor_frag
+        if var(:org_fragtog_preview_delay) > 0
+          assign :org_fragtog__timer,
+                 el.run_with_idle_timer(var(:org_fragtog_preview_delay), nil, function(:org_fragtog__disable_frag), cursor_frag, true)
+        else
+          el.org_fragtog__disable_frag(cursor_frag)
+        end
+      end
+    end
+    assign :org_fragtog__prev_point, el.point
   end
-  assign :org_fragtog__prev_point, el.point
 end
 
 function :org_fragtog__frag_enabled do |frag|
