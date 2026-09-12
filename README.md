@@ -242,12 +242,12 @@ The exact v0.10 contract — supported constructs, name rules, expression
 semantics, and everything explicitly rejected — is
 [`docs/language.md`](docs/language.md). Top-level definitions include commands,
 noninteractive functions with required, optional, and rest parameters and
-value returns, and
-package structure: `variable`, `constant`, `custom` (with `type:`),
-`require`, and `provide`. Definitions accept documentation strings via a
-leading `doc "..."` statement. Commands accept parameters and `interactive`
-specifications (such as `"P"` for the raw prefix argument), support
-`with_current_buffer`, `insert`, lexical locals, conditionals, and explicit
+value returns, and package structure: `variable`, `constant`, `custom` (with
+arbitrary keyword pairs), `require`, and `provide`. Definitions accept
+documentation strings via a leading `doc "..."` statement. Commands accept
+parameters and `interactive` specifications (such as `"P"` for the raw prefix
+argument), support `with_current_buffer`, `insert`, lexical locals,
+conditionals, and explicit
 `el.function_name(...)` calls with optional body blocks, lexical `fn` values,
 and named `function(:name)` references. Expressions include lists, cons cells,
 literal quote, quasiquote with unquote and splicing, Ruby operators, loops,

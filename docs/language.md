@@ -308,8 +308,9 @@ structure safely:
    boolean, comparison, arithmetic, `while`, `until`, and side-effecting
    `.each` syntax.
 3. Variable and package structure; v0.9 provides `variable`, `constant`,
-   `custom` (with `type:`), `require`, and `provide`, documentation strings
-   for commands and functions, and `var` reads of dynamic Elisp variables.
+   `custom` (with arbitrary keyword pairs), `require`, and `provide`,
+   documentation strings for commands and functions, and `var` reads of
+   dynamic Elisp variables.
 4. Parameters and interactive commands; v0.10 provides optional and rest
    parameters for functions and lambdas, command parameters, and
    interactive string specifications with entry-time parameter defaults.
