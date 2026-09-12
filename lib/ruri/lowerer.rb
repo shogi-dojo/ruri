@@ -17,6 +17,7 @@ module Ruri
         when Forms::FunctionDefinition then lower_function_definition(definition)
         when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
         when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
+        when Forms::VariableLocalDefinition then lower_variable_definition(definition, "defvar-local")
         when Forms::CustomDefinition then lower_custom_definition(definition)
         when Forms::Require then lower_feature(definition, "require")
         when Forms::Provide then lower_feature(definition, "provide")
@@ -84,10 +85,10 @@ module Ruri
         lower_expression(definition.value)
       ]
       items << lower_docstring_text(definition.docstring) if definition.docstring
-      if definition.type
+      definition.keywords.each do |key, expression|
         items << Elisp.inline_sequence(
-          Elisp.symbol(":type"),
-          lower_expression(definition.type)
+          Elisp.symbol(":#{key}"),
+          lower_expression(expression)
         )
       end
       Elisp.list(*items)
@@ -224,6 +225,13 @@ module Ruri
         )
       when Forms::ExpressionStatement
         lower_expression(statement.expression)
+      when Forms::Assign
+        items = [Elisp.symbol("setq")]
+        statement.pairs.each do |name, value|
+          items << Elisp.symbol(name)
+          items << lower_expression(value)
+        end
+        Elisp.list(*items)
       else
         raise ArgumentError, "cannot lower Ruri form: #{statement.class}"
       end
@@ -262,6 +270,8 @@ module Ruri
       when Forms::LocalRead
         Elisp.symbol(expression.name)
       when Forms::VarRead
+        Elisp.symbol(expression.name)
+      when Forms::Keyword
         Elisp.symbol(expression.name)
       when Forms::Lambda
         Elisp.list(

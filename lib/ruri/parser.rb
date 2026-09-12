@@ -173,6 +173,7 @@ module Ruri
       when :variable then parse_variable_definition(node, "variable", "defvar", false)
       when :constant then parse_variable_definition(node, "constant", "defconst", true)
       when :custom then parse_custom_definition(node)
+      when :variable_local then parse_variable_definition(node, "variable_local", "defvar-local", false)
       when :require then parse_feature_form(node, :require)
       when :provide then parse_feature_form(node, :provide)
       else unsupported(node)
@@ -330,7 +331,14 @@ module Ruri
         docstring = text
       end
 
-      form_class = value_required ? Forms::ConstantDefinition : Forms::VariableDefinition
+form_class =
+  if value_required
+    Forms::ConstantDefinition
+  elsif lisp_form == "defvar-local"
+    Forms::VariableLocalDefinition
+  else
+    Forms::VariableDefinition
+  end
       @definitions << form_class.new(
         source_name: source_name,
         name: lisp_name,
@@ -339,9 +347,10 @@ module Ruri
       )
     end
 
-    # `custom :name value ["doc"] [type: expression]` lowers to defcustom.
-    # The type value lowers like any expression, so `type: :string` emits
-    # :type 'string and richer types use quote/quasiquote data.
+    # `custom :name value ["doc"] [key: expression ...]` lowers to
+    # defcustom. Every keyword pair lowers to `:key value` in source
+    # order (`type: :string` emits `:type 'string`), so standard
+    # defcustom keywords such as :group and :options work directly.
     def parse_custom_definition(node)
       if node.receiver
         error(node.location, "unsupported construct: method call `custom` with explicit receiver")
@@ -353,11 +362,6 @@ module Ruri
       end
 
       positional, keywords = split_arguments(node)
-      unknown = keywords.map(&:first).reject { |name| name == "type" }
-      unless unknown.empty?
-        error(node.location, "custom does not accept keyword arguments: #{unknown.join(', ')}; only type: is allowed")
-        return
-      end
       unless positional.length.between?(2, 3)
         error(node.location, "custom requires two or three arguments: :name, value, and an optional docstring")
         return
@@ -390,10 +394,16 @@ module Ruri
         docstring = text
       end
 
-      type = nil
-      if (type_node = keywords.assoc("type")&.last)
-        type = parse_expression(type_node)
-        return unless type
+      keyword_pairs = []
+      keywords.each do |key, value_node|
+        unless key.match?(NAME_RE) && key != "t"
+          error(node.location, "invalid custom keyword `#{key}`; must match [a-z][a-z0-9_]*")
+          return
+        end
+        expression = parse_expression(value_node)
+        return unless expression
+
+        keyword_pairs << [key.tr("_", "-"), expression]
       end
 
       @definitions << Forms::CustomDefinition.new(
@@ -401,7 +411,7 @@ module Ruri
         name: lisp_name,
         value: value,
         docstring: docstring,
-        type: type
+        keywords: keyword_pairs
       )
     end
 
@@ -447,7 +457,10 @@ module Ruri
       args.each do |arg|
         if arg.is_a?(Prism::KeywordHashNode)
           arg.elements.each do |element|
-            next unless element.is_a?(Prism::AssocNode) && element.key.is_a?(Prism::SymbolNode)
+            unless element.is_a?(Prism::AssocNode) && element.key.is_a?(Prism::SymbolNode)
+              error(element.location, "keyword arguments must use symbol keys")
+              next
+            end
 
             keywords << [element.key.unescaped.to_s, element.value]
           end
@@ -560,7 +573,7 @@ module Ruri
           end
         when :command
           error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :require, :provide
+        when :variable, :constant, :custom, :variable_local, :require, :provide
           error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
@@ -574,6 +587,10 @@ module Ruri
           end
         when :insert
           if (form = parse_insert(stmt))
+            forms << form
+          end
+        when :assign
+          if (form = parse_assign_statement(stmt))
             forms << form
           end
         else
@@ -842,6 +859,7 @@ module Ruri
         return parse_quote(node) if unqualified_call?(node, :quote)
         return parse_quasiquote(node) if unqualified_call?(node, :quasiquote)
         return parse_var_read(node) if unqualified_call?(node, :var)
+        return parse_keyword(node) if unqualified_call?(node, :keyword)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -873,6 +891,34 @@ module Ruri
         name: generated_local_name(source_name)
       )
     end
+
+# `keyword :begin` emits the Elisp keyword symbol :begin, which is
+# self-quoting; an ordinary symbol literal would emit (quote begin).
+    def parse_keyword(node)
+  if node.block
+    error(node.location, "keyword does not take a block")
+    return nil
+  end
+  positional, keywords = split_arguments(node)
+  unless keywords.empty?
+    error(node.location, "keyword does not accept keyword arguments")
+    return nil
+  end
+  unless positional.length == 1
+    error(node.location, "keyword requires exactly one literal symbol argument")
+    return nil
+  end
+
+  ok, source_name = extract_symbol(positional[0])
+  return unless ok
+  unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+    error(positional[0].location,
+          "invalid keyword `#{source_name}`; must match [a-z][a-z0-9_]*")
+    return nil
+  end
+
+  Forms::Keyword.new(source_name: source_name, name: ":#{source_name.tr("_", "-")}")
+end
 
     def local_reference_call?(node)
       @local_names&.include?(node.name.to_s) &&
@@ -907,6 +953,51 @@ module Ruri
 
       Forms::VarRead.new(source_name: source_name, name: source_name.tr("_", "-"))
     end
+
+# `assign :name, value, ...` writes Emacs Lisp variables with setq.
+# Special-form positions are unevaluated symbols, so this is a typed
+# form rather than an el.* call. An even number of arguments is
+# required; every odd position is a literal symbol.
+    def parse_assign_statement(node)
+  if node.receiver
+    error(node.location, "unsupported construct: method call `assign` with explicit receiver")
+    return nil
+  end
+  if node.block
+    error(node.location, "assign does not take a block")
+    return nil
+  end
+  positional, keywords = split_arguments(node)
+  unless keywords.empty?
+    error(node.location, "assign does not accept keyword arguments")
+    return nil
+  end
+  if positional.length < 2 || positional.length.odd?
+    error(node.location, "assign requires name/value pairs")
+    return nil
+  end
+
+pairs = []
+positional.each_slice(2) do |name_node, value_node|
+  unless literal_symbol_node?(name_node)
+    error(name_node.location,
+          "assign requires literal symbol variable names")
+    return nil
+  end
+  ok, source_name = extract_symbol(name_node)
+  return nil unless ok
+    unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+      error(name_node.location,
+            "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+      return nil
+    end
+    value = parse_expression(value_node)
+    return nil unless value
+
+    pairs << [source_name.tr("_", "-"), value]
+  end
+  Forms::Assign.new(pairs: pairs)
+end
 
     def parse_lambda(node)
       if node.arguments
@@ -1216,7 +1307,7 @@ module Ruri
       return true unless node.is_a?(Prism::CallNode)
       return false if node.name == :each && node.receiver
       return false if node.receiver.nil? &&
-                      %i[interactive command with_current_buffer insert doc].include?(node.name)
+                      %i[interactive command with_current_buffer insert doc assign].include?(node.name)
       return false if node.receiver.nil? && node.name == :function && node.block
 
       true
@@ -1253,7 +1344,7 @@ module Ruri
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
         when :command
           error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :require, :provide
+        when :variable, :constant, :custom, :variable_local, :require, :provide
           error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
@@ -1267,6 +1358,10 @@ module Ruri
           end
         when :insert
           if (form = parse_insert(stmt))
+            forms << form
+          end
+        when :assign
+          if (form = parse_assign_statement(stmt))
             forms << form
           end
         else

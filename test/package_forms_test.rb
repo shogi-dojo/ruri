@@ -155,10 +155,28 @@ class PackageFormsTest < Minitest::Test
     assert_match(/custom requires two or three arguments/, diag.message)
   end
 
-  def test_rejects_unknown_custom_keywords
-    diag = single_diagnostic('custom :greeting_style, :plain, "d", group: :faces')
+  def test_accepts_multiple_custom_keywords_in_source_order
+    output = compile_source(<<~'RURI')
+      custom :greeting_style, :plain, "d", group: :faces,
+             type: :symbol,
+             options: quote(list(:plain, :fancy))
+    RURI
 
-    assert_match(/custom does not accept keyword arguments: group; only type: is allowed/, diag.message)
+    assert_includes output, <<~ELISP
+      (defcustom greeting-style 'plain
+        "d"
+        :group 'faces
+        :type 'symbol
+        :options '(plain fancy))
+    ELISP
+  end
+
+  def test_rejects_invalid_custom_keyword_names
+    diag = single_diagnostic(<<~'RURI')
+      custom :greeting_style, :plain, "d", NotKey: :faces
+    RURI
+
+    assert_match(/invalid custom keyword `NotKey`/, diag.message)
   end
 
   def test_custom_shares_the_variable_namespace
@@ -238,6 +256,56 @@ class PackageFormsTest < Minitest::Test
     end
   end
 
+
+  def test_variable_local_emits_defvar_local
+    output = compile_source(<<~'RURI')
+      variable_local :greet_prev, nil, "Previous fragment."
+    RURI
+
+    assert_includes output, <<~ELISP
+      (defvar-local greet-prev nil
+        "Previous fragment.")
+    ELISP
+  end
+
+  def test_assign_emits_setq_with_bare_symbols
+    output = compile_source(<<~'RURI')
+      command :track_cmd do
+        interactive
+        assign :greet_prev, "x", :greet_count, 1 + 2
+      end
+    RURI
+
+    assert_includes output, "(setq greet-prev \"x\" greet-count\n    (+ 1 2))"
+  end
+
+  def test_assign_is_rejected_in_bad_shapes
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive
+        assign :x
+        assign 1, 2
+        assign(:x) { 1 }
+      end
+    RURI
+
+    assert_equal 3, diags.size
+    assert_match(/assign requires name\/value pairs/, diags[0].message)
+    assert_match(/assign requires literal symbol variable names/, diags[1].message)
+    assert_match(/assign does not take a block/, diags[2].message)
+  end
+
+  def test_keyword_emits_self_quoting_symbol
+    output = compile_source(<<~RURI)
+      command :prop_cmd do
+        interactive
+        el.message("%S", el.org_element_property(keyword(:begin), :symbol_node))
+      end
+    RURI
+
+    assert_includes output, %q{(org-element-property :begin 'symbol-node)}
+  end
+
   def test_var_read_emits_bare_symbol
     output = compile_source(<<~RURI)
       command :show_case_cmd do
@@ -248,7 +316,7 @@ class PackageFormsTest < Minitest::Test
     RURI
 
     assert_includes output, "(setq ruri--local-style case-fold-search)"
-    assert_includes output, '(message "%S" ruri--local-style)'
+    assert_includes output, "(message \"%S\" ruri--local-style)"
   end
 
   def test_var_read_normalizes_underscores
@@ -270,12 +338,36 @@ class PackageFormsTest < Minitest::Test
           el.message("on")
         end
         total = var :fill_column
-el.message("%S", list(total, 2))
+        el.message("%S", list(total, 2))
       end
     RURI
 
     assert_includes output, "(if auto-fill-mode"
     assert_includes output, "(setq ruri--local-total fill-column)"
+  end
+
+  def test_rejects_var_reads_with_wrong_arguments
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive
+        el.message("%S", var())
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/var requires exactly one literal symbol argument/, diags.first.message)
+  end
+
+  def test_rejects_var_reads_of_reserved_names
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive
+        el.message("%S", var(:nil))
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/invalid variable name `nil`/, diags.first.message)
   end
 
   def test_rejects_var_reads_with_wrong_arguments

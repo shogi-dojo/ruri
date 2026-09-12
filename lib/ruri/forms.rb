@@ -19,7 +19,17 @@ module Ruri
 
     # Top-level customizable variable. +type+ is an optional expression
     # lowered after the :type keyword.
-    CustomDefinition = Data.define(:source_name, :name, :value, :docstring, :type)
+    CustomDefinition = Data.define(:source_name, :name, :value, :docstring, :keywords)
+
+    # Top-level buffer-local variable definition (defvar-local).
+    VariableLocalDefinition = Data.define(:source_name, :name, :value, :docstring)
+
+    # Statement form assigning to Emacs Lisp variables (setq). Pairs are
+    # [name, value_expression] in source order.
+    Assign = Data.define(:pairs)
+
+    # Elisp keyword symbol (:begin, :end), self-quoting in Elisp.
+    Keyword = Data.define(:source_name, :name)
 
     # Top-level feature declarations: (require 'name) / (provide 'name).
     Require = Data.define(:source_name, :name)
