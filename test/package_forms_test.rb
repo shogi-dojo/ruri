@@ -171,4 +171,70 @@ class PackageFormsTest < Minitest::Test
     assert_equal 1, diags.size
     assert_match(/duplicate custom definition `greeting-style`/, diags.first.message)
   end
+
+  def test_require_and_provide_emit_quoted_feature_names
+    output = compile_source(<<~RURI)
+      require :subr_x
+
+      provide :greeting_pack
+    RURI
+
+    assert_includes output, "(require 'subr-x)"
+    assert_includes output, "(provide 'greeting-pack)"
+  end
+
+  def test_definitions_keep_source_order_for_require_provide
+    output = compile_source(<<~RURI)
+      require :subr_x
+
+      command :greet_cmd do
+        interactive
+        insert("hi")
+      end
+
+      provide :greeting_pack
+    RURI
+
+    require_at = output.index("(require 'subr-x)")
+    defun_at = output.index("(defun greet-cmd ()")
+    provide_at = output.index("(provide 'greeting-pack)")
+    assert require_at < defun_at && defun_at < provide_at
+  end
+
+  def test_rejects_feature_form_with_wrong_arguments
+    diags = diagnostics_of(<<~RURI)
+      require
+
+      provide :a, :b
+    RURI
+
+    assert_equal 2, diags.size
+    assert_match(/require requires exactly one literal symbol argument/, diags.first.message)
+    assert_match(/provide requires exactly one literal symbol argument/, diags.last.message)
+  end
+
+  def test_rejects_feature_form_with_block
+    diag = single_diagnostic(<<~RURI)
+      require :subr_x do
+      end
+    RURI
+
+    assert_match(/require does not take a block/, diag.message)
+  end
+
+  def test_rejects_package_forms_inside_bodies
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive
+        require :subr_x
+        provide :a
+        variable :x, 1
+      end
+    RURI
+
+    assert_equal 3, diags.size
+    diags.each do |diag|
+      assert_match(/is only allowed at the top level of a \.ruri file/, diag.message)
+    end
+  end
 end

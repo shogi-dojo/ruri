@@ -18,6 +18,8 @@ module Ruri
         when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
         when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
         when Forms::CustomDefinition then lower_custom_definition(definition)
+        when Forms::Require then lower_feature(definition, "require")
+        when Forms::Provide then lower_feature(definition, "provide")
         else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
         end
       end
@@ -89,6 +91,13 @@ module Ruri
         )
       end
       Elisp.list(*items)
+    end
+
+    def lower_feature(definition, lisp_form)
+      Elisp.list(
+        Elisp.symbol(lisp_form),
+        Elisp.quote(Elisp.symbol(definition.name))
+      )
     end
 
     def lower_docstring_text(text)

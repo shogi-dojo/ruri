@@ -173,6 +173,8 @@ module Ruri
       when :variable then parse_variable_definition(node, "variable", "defvar", false)
       when :constant then parse_variable_definition(node, "constant", "defconst", true)
       when :custom then parse_custom_definition(node)
+      when :require then parse_feature_form(node, :require)
+      when :provide then parse_feature_form(node, :provide)
       else unsupported(node)
       end
     end
@@ -403,6 +405,38 @@ module Ruri
       )
     end
 
+    # `require :name` / `provide :name` lower to (require 'name) and
+    # (provide 'name). They are top-level statements only.
+    def parse_feature_form(node, kind)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `#{kind}` with explicit receiver")
+        return
+      end
+      if node.block
+        error(node.location, "#{kind} does not take a block")
+        return
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "#{kind} does not accept keyword arguments")
+        return
+      end
+      unless positional.length == 1
+        error(node.location, "#{kind} requires exactly one literal symbol argument")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid #{kind} name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+
+      @definitions << (kind == :require ? Forms::Require.new(source_name: source_name, name: source_name.tr("_", "-")) : Forms::Provide.new(source_name: source_name, name: source_name.tr("_", "-")))
+    end
+
     # Splits a call's arguments into positional nodes and keyword
     # (name, value) pairs from a trailing `name: value` hash. DSL
     # definition forms use the keyword pairs sparingly and explicitly.
@@ -526,6 +560,8 @@ module Ruri
           end
         when :command
           error(stmt.location, "nested command definitions are not supported")
+        when :variable, :constant, :custom, :require, :provide
+          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
             error(stmt.location, "nested function definitions are not supported")
@@ -1188,6 +1224,8 @@ module Ruri
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
         when :command
           error(stmt.location, "nested command definitions are not supported")
+        when :variable, :constant, :custom, :require, :provide
+          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
             error(stmt.location, "nested function definitions are not supported")

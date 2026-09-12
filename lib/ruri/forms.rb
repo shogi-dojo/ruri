@@ -21,6 +21,13 @@ module Ruri
     # lowered after the :type keyword.
     CustomDefinition = Data.define(:source_name, :name, :value, :docstring, :type)
 
+    # Top-level feature declarations: (require 'name) / (provide 'name).
+    Require = Data.define(:source_name, :name)
+    Provide = Data.define(:source_name, :name)
+
+    # Reading the dynamic value of an Emacs Lisp variable.
+    VarRead = Data.define(:source_name, :name)
+
     # The required first statement of every command body.
     Interactive = Data.define
 
