@@ -1018,7 +1018,7 @@ end')
       end
     RURI
 
-    assert_match(/`break` cannot cross a fn boundary/, diag.message)
+    assert_match(/`break` is only allowed inside while, until, or each/, diag.message)
     assert_equal 2, diag.line
   end
 

@@ -213,7 +213,7 @@ module Ruri
       return unless parameters
 
       body = with_local_scope(node.block, parameters.names) do
-        with_exit_scope(:fn) { parse_command_body(node.block) }
+        with_exit_scope(:definition) { parse_command_body(node.block) }
       end
       @definitions << Forms::Command.new(
         source_name: source_name,
@@ -258,7 +258,7 @@ module Ruri
         statements = statements[1..]
       end
       body = with_local_scope(node.block, parameters.names) do
-        with_exit_scope(:fn) { parse_value_body(statements) }
+        with_exit_scope(:definition) { parse_value_body(statements) }
       end
       body = [docstring] + body if docstring
       @definitions << Forms::FunctionDefinition.new(
@@ -952,7 +952,9 @@ module Ruri
     # Returns a diagnostic message when the exit statement's placement
     # cannot be lowered, or nil when it is fine.
     def exit_placement_error(_node, name)
-      nearest = @exit_scopes.reverse.find { |kind| kind == :loop || kind == :fn }
+      nearest = @exit_scopes.reverse.find do |kind|
+        kind == :loop || kind == :fn || kind == :definition
+      end
       if nearest == :loop
         nil
       elsif nearest == :fn
