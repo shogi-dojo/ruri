@@ -350,6 +350,60 @@ class ParserTest < Minitest::Test
     end
   end
 
+  def test_parses_nested_quasiquotation_with_depth_tracking
+    command = parse(<<~RURI).first
+      command :nested_cmd do
+        interactive
+        template = quasiquote(list(:a, quasiquote(list(:b, unquote(:flag)))))
+      end
+    RURI
+
+    outer = command.body[1].value
+    inner = outer.value.elements[1]
+    assert_instance_of Ruri::Forms::QuasiQuote, inner
+    # `,flag` at depth 2 escapes one level: the content stays quoted data.
+    deep_escape = inner.value.elements[1]
+    assert_instance_of Ruri::Forms::NestedUnquote, deep_escape
+    assert_equal Ruri::Forms::Literal.new(kind: :symbol, value: "flag"),
+                 deep_escape.value
+  end
+
+  def test_parses_a_doubled_unquote_as_a_nested_escape_of_an_expression
+    command = parse(<<~RURI).first
+      command :doubled_cmd do
+        interactive
+        template = quasiquote(list(:c, quasiquote(list(:d, unquote(unquote(el.concat("x", "y")))))))
+      end
+    RURI
+
+    outer = command.body[1].value
+    inner = outer.value.elements[1]
+    deep_escape = inner.value.elements[1]
+    assert_instance_of Ruri::Forms::NestedUnquote, deep_escape
+    # The inner unquote is a depth-1 escape, so its content is an
+    # expression evaluated when the outer template materializes.
+    expression_escape = deep_escape.value
+    assert_instance_of Ruri::Forms::Unquote, expression_escape
+    assert_instance_of Ruri::Forms::Call, expression_escape.value
+  end
+
+  def test_rejects_deep_splice_outside_a_list_and_unquote_inside_quote
+    diags = diagnostics_of(<<~RURI)
+      command :bad_splice do
+        interactive
+        template = quasiquote(list(:a, quasiquote(splice(:b))))
+      end
+    RURI
+
+    assert_match(/splice must appear inside a quasiquoted list or vector/, diags[0].message)
+    assert_match(/quoted data supports only literals/, single_diagnostic(<<~RURI).message)
+      command :quoted_unquote do
+        interactive
+        pair = quote(unquote(:a))
+      end
+    RURI
+  end
+
   def test_rejects_top_level_splice_in_quasiquote
     diag = single_diagnostic(<<~RURI)
       command :data do
@@ -1436,5 +1490,271 @@ end')
     RURI
 
     assert_match(/doc is only allowed once, as the first statement/, diag.message)
+  end
+
+  def test_parses_let_bindings_with_sequential_scope
+    function = parse(<<~RURI).first
+      function :scoped do
+        base = 10
+        let do |c, a = base, b = a|
+          list(a, b, c)
+        end
+      end
+    RURI
+
+    let_form = function.body[1].expression
+    assert_instance_of Ruri::Forms::Let, let_form
+    parameters = let_form.parameters
+    assert_equal ["ruri--local-c"], parameters.required
+    assert_nil parameters.rest
+    first, second = parameters.optionals
+    assert_equal "ruri--local-a", first.name
+    assert_equal "ruri--local-base", first.default.name
+    # The second initializer sees the binding to its left, not the later
+    # scope; `b = a` reads the let binding of a.
+    assert_equal "ruri--local-a", second.default.name
+    assert_equal 1, let_form.body.length
+    assert_instance_of Ruri::Forms::ExpressionStatement, let_form.body[0]
+  end
+
+  def test_parses_let_as_an_expression_value
+    function = parse(<<~RURI).first
+      function :capture do
+        result = let do |x = 1|
+          x
+        end
+        result
+      end
+    RURI
+
+    write = function.body[0]
+    assert_instance_of Ruri::Forms::LocalWrite, write
+    assert_instance_of Ruri::Forms::Let, write.value
+    assert_equal "ruri--local-x", write.value.parameters.optionals.first.name
+  end
+
+  def test_parses_a_literal_nil_let_default_as_a_nil_binding
+    function = parse(<<~RURI).first
+      function :blank do
+        let do |x = nil|
+          x
+        end
+      end
+    RURI
+
+    let_form = function.body[0].expression
+    assert_equal "ruri--local-x", let_form.parameters.optionals.first.name
+    assert_equal Ruri::Forms::Literal.new(kind: :nil, value: nil),
+                 let_form.parameters.optionals.first.default
+  end
+
+  def test_rejects_let_rest_parameter
+    diag = single_diagnostic(<<~RURI)
+      function :collect do
+        let do |a, *rest|
+          a
+        end
+      end
+    RURI
+
+    assert_match(/let takes no rest parameter/, diag.message)
+  end
+
+  def test_rejects_let_call_arguments_and_missing_block
+    diags = diagnostics_of(<<~RURI)
+      function :args do
+        let(:a) do
+          :a
+        end
+      end
+
+      function :bare do
+        let
+        :ok
+      end
+    RURI
+
+    assert_match(/let takes no call arguments/, diags[0].message)
+    assert_match(/let requires a do\.\.\.end or \{\.\.\.\} block/, diags[1].message)
+  end
+
+  def test_rejects_break_crossing_a_let_block
+    diag = single_diagnostic(<<~RURI)
+      function :escape do
+        while true
+          let do |x = 1|
+            break
+          end
+        end
+      end
+    RURI
+
+    assert_match(/`break` cannot cross a let block boundary/, diag.message)
+    assert_equal 4, diag.line
+  end
+
+  def test_rejects_let_forward_reference_of_a_later_binding
+    diag = single_diagnostic(<<~RURI)
+      function :forward do
+        let do |b = c, c = 2|
+          b
+        end
+      end
+    RURI
+
+    assert_match(/let initializer cannot reference the later binding `c`/, diag.message)
+    assert_equal 2, diag.line
+  end
+
+  def test_let_initializer_may_read_an_outer_local_shadowed_by_a_later_binding
+    function = parse(<<~RURI).first
+      function :outer_shadow do
+        c = 9
+        let do |b = c, c = 2|
+          b
+        end
+      end
+    RURI
+
+    let_form = function.body[1].expression
+    # b's initializer reads the outer c, which the let* evaluation order
+    # makes correct: the new c binds only after the initializer runs.
+    assert_equal "ruri--local-c", let_form.parameters.optionals.first.default.name
+  end
+
+  def test_rejects_el_let_and_other_unevaluated_position_calls
+    diags = diagnostics_of(<<~RURI)
+      function :bindings do
+        el.let(list(list(:a, 1)), :a)
+      end
+
+      function :writes do
+        el.setq(:a, 1)
+      end
+
+      function :matches do
+        el.pcase(var(:value), list(:a))
+      end
+    RURI
+
+    assert_match(/el\.let takes bindings or names in unevaluated.*use the Ruri let form/,
+                 diags[0].message)
+    assert_match(/el\.setq takes bindings or names in unevaluated.*use assign\(:name, value\)/,
+                 diags[1].message)
+    assert_match(/el\.pcase takes bindings or names in unevaluated.*use conditionals/,
+                 diags[2].message)
+  end
+
+  def test_rejects_unevaluated_position_calls_at_any_arity
+    diags = diagnostics_of(<<~RURI)
+      function :bare do
+        el.cl_loop
+      end
+
+      function :bound do
+        el.when_let(list(list(:a, 1)))
+      end
+    RURI
+
+    assert_match(/el\.cl-loop takes bindings or names in unevaluated/, diags[0].message)
+    assert_match(/el\.when-let takes bindings or names in unevaluated/, diags[1].message)
+  end
+
+  def test_parses_times_as_a_counting_loop
+    function = parse(<<~RURI).first
+      function :repeat do
+        total = 0
+        3.times do |i|
+          total = total + i
+        end
+        total
+      end
+    RURI
+
+    times_form = function.body[1]
+    assert_instance_of Ruri::Forms::Times, times_form
+    assert_equal 3, times_form.count.value
+    assert_equal "ruri--local-i", times_form.parameter
+    assert_equal 1, times_form.body.length
+  end
+
+  def test_times_is_statement_only_and_rejects_extra_block_parameters
+    diags = diagnostics_of(<<~RURI)
+      function :value_use do
+        result = 3.times do |i|
+          i
+        end
+        result
+      end
+
+      function :two_params do
+        3.times do |i, j|
+          i
+        end
+      end
+    RURI
+
+    assert_match(/unsupported expression/, diags[0].message)
+    assert_match(/times requires exactly one block parameter/, diags[1].message)
+  end
+
+  def test_parses_place_operations_with_symbol_local_and_form_places
+    function = parse(<<~RURI).first
+      function :mutate do
+        cell = list(:a)
+        el.setf(el.car(cell), 1)
+        el.setf(:hook_var, 2)
+        el.push(3, :hook_var)
+        el.cl_incf(cell)
+        el.cl_decf(cell, 2)
+        el.pop(:hook_var)
+        el.cl_incf(cell)
+      end
+    RURI
+
+    forms = function.body
+    setf_form = forms[1]
+    assert_instance_of Ruri::Forms::PlaceOperation, setf_form
+    assert_equal "setf", setf_form.name
+    assert_instance_of Ruri::Forms::Call, setf_form.place
+    assert_equal "car", setf_form.place.name
+    assert_equal 1, setf_form.arguments.first.value
+    assert_equal "hook-var", forms[2].place.name
+    assert_equal "push", forms[3].name
+    # push keeps Elisp argument order in the form: value first, place last.
+    assert_equal "hook-var", forms[3].place.name
+    assert_equal 3, forms[3].arguments.first.value
+    assert_instance_of Ruri::Forms::LocalRead, forms[4].place
+    assert_equal "ruri--local-cell", forms[4].place.name
+    assert_equal 2, forms[5].arguments.first.value
+    assert_empty forms[6].arguments
+  end
+
+  def test_rejects_invalid_places_and_arities
+    diags = diagnostics_of(<<~RURI)
+      function :bad_place do
+        el.setf("text", 1)
+      end
+
+      function :reserved_place do
+        el.setf(:t, 1)
+      end
+
+      function :bad_arity do
+        el.pop(:hook_var, 2)
+      end
+
+      function :no_block do
+        el.cl_incf(:hook_var) do
+          :x
+        end
+      end
+    RURI
+
+    assert_match(/setf place must be a variable symbol, a Ruri local, var\(:name\), or an el\.\* form/,
+                 diags[0].message)
+    assert_match(/invalid setf place `t`/, diags[1].message)
+    assert_match(/el\.pop takes one place/, diags[2].message)
+    assert_match(/el\.cl-incf does not take a block/, diags[3].message)
   end
 end

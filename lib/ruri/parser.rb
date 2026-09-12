@@ -18,6 +18,42 @@ module Ruri
     }.freeze
     UNARY_OPERATORS = { :! => "not", :-@ => "-", :+@ => "identity" }.freeze
 
+    # Emacs Lisp forms that take bindings, patterns, or variable names in
+    # unevaluated positions. Through the generic el.* call path their
+    # arguments are emitted as evaluated calls and the generated Elisp
+    # fails only at runtime, so each name is rejected at compile time
+    # with a pointer to the Ruri construct that covers it.
+    UNEVALUATED_POSITION_CALLS = {
+      "let" => "use the Ruri let form",
+      "let-star" => "use the Ruri let form; it binds sequentially",
+      "setq" => "use assign(:name, value)",
+      "dolist" => "use collection.each do |item| ... end",
+      "cl-dolist" => "use collection.each do |item| ... end",
+      "pcase" => "Ruri cannot express pcase patterns; use conditionals",
+      "cl-loop" => "Ruri cannot express cl-loop clauses; use while, each, or let",
+      "cl-destructuring-bind" => "Ruri cannot express destructuring patterns",
+      "seq-let" => "Ruri cannot express destructuring patterns",
+      "when-let" => "bind with the Ruri let form and branch with if",
+      "if-let" => "bind with the Ruri let form and branch with if"
+    }.freeze
+
+    # Emacs Lisp place-taking operators routed into the typed
+    # PlaceOperation form. +args+ bounds the argument count and +place+
+    # says which position is the unevaluated place (push takes its value
+    # first, the place last; everything else places first).
+    PLACE_OPERATORS = {
+      "setf" => { args: [2, 2], place: :first,
+                  arity: "el.setf takes one place and one value" },
+      "push" => { args: [2, 2], place: :last,
+                  arity: "el.push takes one value and one place" },
+      "pop" => { args: [1, 1], place: :only,
+                 arity: "el.pop takes one place" },
+      "cl-incf" => { args: [1, 2], place: :first,
+                     arity: "el.cl-incf takes a place and an optional delta" },
+      "cl-decf" => { args: [1, 2], place: :first,
+                     arity: "el.cl-decf takes a place and an optional delta" }
+    }.freeze
+
     class << self
       def parse(source, path:)
         new(source, path).parse
@@ -34,6 +70,9 @@ module Ruri
       # Lexical placement stack for break/next/return: :fn for definition
       # and lambda bodies, :loop for while/until/each bodies.
       @exit_scopes = []
+      # Binding names not yet in scope while parsing a sequential default
+      # (let), so a forward reference gets a precise diagnostic.
+      @later_binding_names = []
     end
 
     def parse
@@ -508,6 +547,15 @@ module Ruri
       @local_names = previous_names
     end
 
+    # Extends the visible local names for the duration of the block.
+    def with_local_names(names)
+      previous_names = @local_names
+      @local_names = ((@local_names || []) + names).uniq
+      yield
+    ensure
+      @local_names = previous_names
+    end
+
     def collect_local_names(node, names = {}, shadowed = [])
       return names.keys unless node
 
@@ -534,14 +582,19 @@ module Ruri
 
     def scoped_block_call?(node)
       node.is_a?(Prism::CallNode) && node.block &&
-        (unqualified_call?(node, :fn) || node.name == :each)
+        (unqualified_call?(node, :fn) || node.name == :each ||
+         unqualified_call?(node, :let))
     end
 
     def raw_block_parameter_names(block)
-      required = block.parameters&.parameters&.requireds || []
-      required.filter_map do |parameter|
+      parameters = block.parameters&.parameters
+      return [] unless parameters
+
+      names = (parameters.requireds + parameters.optionals).filter_map do |parameter|
         parameter.name.to_s if parameter.respond_to?(:name)
       end
+      names << parameters.rest.name.to_s if parameters.rest
+      names
     end
 
     def generated_local_name(source_name)
@@ -569,7 +622,7 @@ module Ruri
           forms << form if form
           next
         end
-        if %i[each map select find].include?(stmt.name) && stmt.receiver
+        if %i[each map select find times].include?(stmt.name) && stmt.receiver
           form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next
@@ -621,6 +674,10 @@ module Ruri
           end
         when :throw
           if (form = parse_throw(stmt))
+            forms << form
+          end
+        when :let
+          if (form = parse_let(stmt))
             forms << form
           end
         else
@@ -889,6 +946,42 @@ module Ruri
       Forms::Catch.new(tag: tag, body: body)
     end
 
+    # `let do |a = 1, b = a + 1, c| … end` introduces block-scoped
+    # bindings with hygienic names. Initializer expressions are parsed
+    # left to right with only the earlier bindings in scope, matching
+    # Ruby's own parameter-default evaluation; lowering emits `let*`, so
+    # a parameter without a default binds nil (the `(let (x))` idiom).
+    # There is nothing to collect, so rest parameters are rejected.
+    def parse_let(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `let` with explicit receiver")
+        return nil
+      end
+      if node.arguments
+        error(node.location, "let takes no call arguments; bind with block parameter defaults")
+        return nil
+      end
+      unless node.block
+        error(node.location, "let requires a do...end or {...} block")
+        return nil
+      end
+
+      parameters = parse_block_parameters(node.block, "let", sequential_defaults: true)
+      return nil unless parameters
+
+      if parameters.rest
+        error(node.block.location, "let takes no rest parameter")
+        return nil
+      end
+
+      body = with_exit_scope(:block) do
+        with_local_names(parameters.names) do
+          parse_value_body(node.block.body&.body || [])
+        end
+      end
+      Forms::Let.new(parameters: generated_parameter_list(parameters), body: body)
+    end
+
     def parse_structured_statement(node)
       case node
       when Prism::LocalVariableWriteNode
@@ -953,12 +1046,14 @@ module Ruri
     # cannot be lowered, or nil when it is fine.
     def exit_placement_error(_node, name)
       nearest = @exit_scopes.reverse.find do |kind|
-        kind == :loop || kind == :fn || kind == :definition
+        %i[loop fn definition block].include?(kind)
       end
       if nearest == :loop
         nil
       elsif nearest == :fn
         "`#{name}` cannot cross a fn boundary; use it directly inside while, until, or each"
+      elsif nearest == :block
+        "`#{name}` cannot cross a let block boundary; use it directly inside the loop"
       else
         "`#{name}` is only allowed inside while, until, or each"
       end
@@ -1035,10 +1130,10 @@ module Ruri
       parse_block_iteration(node, :each)
     end
 
-    # Shared shape for `.each`, `.map`, `.select`, and `.find`: a receiver
-    # expression, no call arguments, and exactly one required block
-    # parameter. Only the block body differs — each is statement-scoped,
-    # the iteration forms parse it for value.
+    # Shared shape for `.each`, `.map`, `.select`, `.find`, and `.times`: a
+    # receiver expression, no call arguments, and exactly one required
+    # block parameter. Only the block body differs — each and times are
+    # statement-scoped, the iteration forms parse it for value.
     def parse_block_iteration(node, name)
       if node.arguments
         error(node.location, "#{name} does not take call arguments")
@@ -1064,7 +1159,7 @@ module Ruri
       begin
         @local_names = ((@local_names || []) + parameters.names).uniq
         body = with_exit_scope(:loop) do
-          if name == :each
+          if %i[each times].include?(name)
             parse_buffer_statements(node.block.body&.body || [])
           else
             parse_value_body(node.block.body&.body || [])
@@ -1076,6 +1171,12 @@ module Ruri
       if name == :each
         Forms::Each.new(
           collection: collection,
+          parameter: generated_local_name(parameters.required.first),
+          body: body
+        )
+      elsif name == :times
+        Forms::Times.new(
+          count: collection,
           parameter: generated_local_name(parameters.required.first),
           body: body
         )
@@ -1103,6 +1204,15 @@ module Ruri
         return nil
       end
 
+      normalized_name = normalize_elisp_name(source_name)
+      if (guidance = UNEVALUATED_POSITION_CALLS[normalized_name])
+        error(node.message_loc || node.location,
+              "el.#{normalized_name} takes bindings or names in unevaluated " \
+              "positions and would only fail at runtime; #{guidance}")
+        return nil
+      end
+      return parse_place_operation(node, normalized_name) if PLACE_OPERATORS.key?(normalized_name)
+
       arguments = node.arguments&.arguments || []
       parsed_arguments = arguments.map { |argument| parse_expression(argument) }
       return nil if parsed_arguments.any?(&:nil?)
@@ -1118,6 +1228,65 @@ module Ruri
         arguments: parsed_arguments,
         body: body
       )
+    end
+
+    # el.setf, el.push, el.pop, el.cl_incf, and el.cl_decf take their
+    # place argument in an unevaluated position, so they become typed
+    # PlaceOperation forms instead of generic calls. The value arguments
+    # are ordinary expressions.
+    def parse_place_operation(node, name)
+      spec = PLACE_OPERATORS.fetch(name)
+      if node.block
+        error(node.location, "el.#{name} does not take a block")
+        return nil
+      end
+      arguments = node.arguments&.arguments || []
+      unless arguments.length.between?(*spec[:args])
+        error(node.location, spec[:arity])
+        return nil
+      end
+
+      place_node, value_nodes = case spec[:place]
+                                when :first then [arguments[0], arguments[1..]]
+                                when :last then [arguments[-1], arguments[0...-1]]
+                                else [arguments[0], []]
+                                end
+      place = parse_place(place_node, name)
+      return nil unless place
+
+      values = value_nodes.map { |value_node| parse_expression(value_node) }
+      return nil if values.any?(&:nil?)
+
+      Forms::PlaceOperation.new(name: name, place: place, arguments: values)
+    end
+
+    # A generalized place: an Elisp variable symbol (literal `:name`), a
+    # Ruri local read, `var(:name)`, or an el.* form such as el.car(x).
+    # Anything else is rejected at compile time rather than emitted as a
+    # setf that fails or misbehaves at runtime.
+    def parse_place(node, name)
+      if literal_symbol_node?(node)
+        ok, source_name = extract_symbol(node)
+        return nil unless ok
+
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(node.location,
+                "invalid #{name} place `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        return Forms::VarRead.new(source_name: source_name, name: source_name.tr("_", "-"))
+      end
+      if node.is_a?(Prism::CallNode) && node.receiver.nil? &&
+         node.arguments.nil? && node.block.nil? && local_reference_call?(node)
+        return parse_local_read(node)
+      end
+      # A name assigned earlier in the block parses as a variable read.
+      return parse_local_read(node) if node.is_a?(Prism::LocalVariableReadNode)
+      return parse_var_read(node) if unqualified_call?(node, :var)
+      return parse_expression(node) if elisp_call?(node)
+
+      error(node.location,
+            "#{name} place must be a variable symbol, a Ruri local, var(:name), or an el.* form")
     end
 
     def parse_expression(node)
@@ -1166,6 +1335,7 @@ module Ruri
         return parse_keyword(node) if unqualified_call?(node, :keyword)
         return parse_catch(node) if unqualified_call?(node, :catch)
         return parse_throw(node) if unqualified_call?(node, :throw)
+        return parse_let(node) if unqualified_call?(node, :let)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -1179,6 +1349,11 @@ module Ruri
         # a zero-argument call. Ruri locals have command-wide lexical scope,
         # so reinterpret that precise shape when a matching assignment exists.
         return parse_local_read(node) if local_reference_call?(node)
+        if @later_binding_names.include?(node.name.to_s)
+          return error(node.location,
+                       "let initializer cannot reference the later binding `#{node.name}`; " \
+                       "bindings see only the bindings to their left")
+        end
 
         error(node.location,
               "unsupported expression: use a Ruri expression or an el.* call")
@@ -1347,7 +1522,12 @@ module Ruri
     # required positionals, optionals carrying parsed default expressions,
     # and an optional trailing rest. Keyword, block, destructured, and
     # post-rest parameters remain unsupported.
-    def parse_block_parameters(block, construct)
+    #
+    # With +sequential_defaults+, each optional's default is parsed with
+    # only the bindings to its left in scope (used by `let`, matching
+    # Ruby's own parameter-default evaluation); otherwise every default
+    # sees every parameter, as for function entry defaults.
+    def parse_block_parameters(block, construct, sequential_defaults: false)
       block_parameters = block.parameters
       return Forms::ParameterList.new(required: [], optionals: [], rest: nil) unless block_parameters
 
@@ -1380,13 +1560,25 @@ module Ruri
       names << rest_node.name.to_s if rest_node
 
       # Defaults run at invocation entry with every parameter already bound,
-      # so they may reference any parameter regardless of position.
+      # so they may reference any parameter regardless of position. For
+      # sequential defaults (let), binding i's initializer sees only the
+      # bindings before it, so a later binding is an undefined local.
       previous_names = @local_names
       begin
-        @local_names = ((@local_names || []) + names).uniq
-        defaults = optional_nodes.map { |parameter| parse_expression(parameter.value) }
+        defaults = optional_nodes.each_with_index.map do |parameter, index|
+          visible = if sequential_defaults
+                      required + optional_nodes.take(index).map { |node| node.name.to_s }
+                    else
+                      names
+                    end
+          @local_names = ((previous_names || []) + visible).uniq
+          @later_binding_names = sequential_defaults ?
+                                 optional_nodes.drop(index + 1).map { |node| node.name.to_s } : []
+          parse_expression(parameter.value)
+        end
       ensure
         @local_names = previous_names
+        @later_binding_names = []
       end
       return nil if defaults.any?(&:nil?)
 
@@ -1513,7 +1705,7 @@ module Ruri
       argument = single_expression_argument(node, "quote")
       return nil unless argument
 
-      value = parse_quoted_data(argument, quasiquote: false, allow_splice: false)
+      value = parse_quoted_data(argument, depth: 0)
       value ? Forms::Quote.new(value: value) : nil
     end
 
@@ -1523,7 +1715,7 @@ module Ruri
       argument = single_expression_argument(node, "quasiquote")
       return nil unless argument
 
-      value = parse_quoted_data(argument, quasiquote: true, allow_splice: false)
+      value = parse_quoted_data(argument, depth: 1)
       value ? Forms::QuasiQuote.new(value: value) : nil
     end
 
@@ -1541,7 +1733,13 @@ module Ruri
       error(node.location, "#{name} requires exactly one argument")
     end
 
-    def parse_quoted_data(node, quasiquote:, allow_splice:)
+    # Parses quoted data at +depth+ quasiquote levels: 0 is a plain quote
+    # context (no escapes), 1 the inside of one quasiquote, and so on. An
+    # unquote at depth 1 escapes fully — its content is an ordinary
+    # runtime expression — while at deeper levels it escapes exactly one
+    # level and its content stays quoted data. Emacs follows Common Lisp
+    # here, so the nested structure is emitted faithfully.
+    def parse_quoted_data(node, depth:, allow_splice: false)
       case node
       when Prism::StringNode, Prism::InterpolatedStringNode,
            Prism::IntegerNode, Prism::FloatNode, Prism::TrueNode,
@@ -1550,46 +1748,80 @@ module Ruri
         parse_expression(node)
       when Prism::ArrayNode
         elements = node.elements.map do |element|
-          parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
+          parse_quoted_data(element, depth: depth, allow_splice: true)
         end
         elements.any?(&:nil?) ? nil : Forms::Vector.new(elements: elements)
       when Prism::CallNode
         if unqualified_call?(node, :list)
-          return parse_quoted_list(node, quasiquote: quasiquote)
+          return parse_quoted_list(node, depth: depth)
         end
         if unqualified_call?(node, :cons)
-          return parse_quoted_cons(node, quasiquote: quasiquote)
+          return parse_quoted_cons(node, depth: depth)
         end
-        if quasiquote && unqualified_call?(node, :unquote)
-          return parse_template_escape(node, splice: false)
+        if depth >= 1 && unqualified_call?(node, :quasiquote)
+          return parse_nested_quasiquote(node, depth: depth)
         end
 
-        if quasiquote && unqualified_call?(node, :splice)
+        if depth >= 1 && unqualified_call?(node, :unquote)
+          return parse_template_escape(node, splice: false) if depth == 1
+
+          return parse_deep_escape(node, splice: false, depth: depth)
+        end
+
+        if depth >= 1 && unqualified_call?(node, :splice)
           unless allow_splice
             return error(node.location,
                          "splice must appear inside a quasiquoted list or vector")
           end
-          return parse_template_escape(node, splice: true)
+          return parse_template_escape(node, splice: true) if depth == 1
+
+          return parse_deep_escape(node, splice: true, depth: depth)
         end
 
         error(node.location,
-              "quoted data supports only literals, arrays, list, and cons")
+              "quoted data supports only literals, arrays, list, cons, quasiquote, and unquote")
       else
         error(node.location,
               "unsupported quoted data: #{node.class.name.delete_prefix("Prism::")}")
       end
     end
 
-    def parse_quoted_list(node, quasiquote:)
+    # A quasiquote written inside another quasiquote: its content is
+    # quoted data one level deeper.
+    def parse_nested_quasiquote(node, depth:)
+      return nil unless block_absent?(node, "quasiquote")
+
+      argument = single_expression_argument(node, "quasiquote")
+      return nil unless argument
+
+      value = parse_quoted_data(argument, depth: depth + 1)
+      value ? Forms::QuasiQuote.new(value: value) : nil
+    end
+
+    # An unquote/splice at depth ≥ 2: the content is quoted data at one
+    # level less and becomes a NestedUnquote/NestedSplice.
+    def parse_deep_escape(node, splice:, depth:)
+      return nil unless block_absent?(node, node.name)
+
+      argument = single_expression_argument(node, node.name)
+      return nil unless argument
+
+      value = parse_quoted_data(argument, depth: depth - 1)
+      return nil unless value
+
+      splice ? Forms::NestedSplice.new(value: value) : Forms::NestedUnquote.new(value: value)
+    end
+
+    def parse_quoted_list(node, depth:)
       return nil unless block_absent?(node, "list")
 
       elements = (node.arguments&.arguments || []).map do |element|
-        parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
+        parse_quoted_data(element, depth: depth, allow_splice: true)
       end
       elements.any?(&:nil?) ? nil : Forms::ListValue.new(elements: elements)
     end
 
-    def parse_quoted_cons(node, quasiquote:)
+    def parse_quoted_cons(node, depth:)
       return nil unless block_absent?(node, "cons")
 
       arguments = node.arguments&.arguments || []
@@ -1597,8 +1829,8 @@ module Ruri
         error(node.location, "cons requires exactly two arguments")
         return nil
       end
-      car = parse_quoted_data(arguments[0], quasiquote: quasiquote, allow_splice: false)
-      cdr = parse_quoted_data(arguments[1], quasiquote: quasiquote, allow_splice: false)
+      car = parse_quoted_data(arguments[0], depth: depth)
+      cdr = parse_quoted_data(arguments[1], depth: depth)
       return nil unless car && cdr
 
       Forms::ConsValue.new(car: car, cdr: cdr)
@@ -1665,7 +1897,7 @@ module Ruri
                       node.is_a?(Prism::BreakNode) ||
                       node.is_a?(Prism::NextNode) || node.is_a?(Prism::ReturnNode)
       return true unless node.is_a?(Prism::CallNode)
-      return false if node.name == :each && node.receiver
+      return false if %i[each times].include?(node.name) && node.receiver
       return false if node.receiver.nil? &&
                       %i[interactive command with_current_buffer insert doc assign].include?(node.name)
       return false if node.receiver.nil? && node.name == :function && node.block
@@ -1690,7 +1922,7 @@ module Ruri
           forms << form if form
           next
         end
-        if %i[each map select find].include?(stmt.name) && stmt.receiver
+        if %i[each map select find times].include?(stmt.name) && stmt.receiver
           form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next
@@ -1728,6 +1960,10 @@ module Ruri
           end
         when :throw
           if (form = parse_throw(stmt))
+            forms << form
+          end
+        when :let
+          if (form = parse_let(stmt))
             forms << form
           end
         else

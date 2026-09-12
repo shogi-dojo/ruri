@@ -21,8 +21,12 @@ module Ruri
     end
 
     # Boundaries where an exit belongs to the inner construct: nested loops
-    # own their break/next, lambdas own their returns.
-    LOOP_EXIT_BOUNDARIES = [Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration].freeze
+    # own their break/next, lambdas own their returns, let blocks own
+    # neither (the parser rejects exits crossing a let).
+    LOOP_EXIT_BOUNDARIES = [
+      Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration,
+      Forms::Times, Forms::Let
+    ].freeze
 
     # `.map` → mapcar, `.select` → seq-filter, `.find` → seq-find. The
     # latter two need `(require 'seq)` in the source, like any seq use.
@@ -125,6 +129,8 @@ module Ruri
         body_has_exit?(form.body, klass, boundaries)
       when Forms::Iteration
         body_has_exit?(form.body, klass, boundaries)
+      when Forms::Times
+        body_has_exit?(form.body, klass, boundaries)
       when Forms::Rescue
         body_has_exit?(form.body, klass, boundaries) ||
           form.clauses.any? { |_, body| body_has_exit?(body, klass, boundaries) } ||
@@ -134,10 +140,18 @@ module Ruri
           body_has_exit?(form.ensure_body, klass, boundaries)
       when Forms::Catch
         body_has_exit?(form.body, klass, boundaries)
+      when Forms::Let
+        body_has_exit?(form.body, klass, boundaries)
       when Forms::WithCurrentBuffer
         body_has_exit?(form.body, klass, boundaries)
       when Forms::Call
         body_has_exit?(form.body, klass, boundaries)
+      when Forms::PlaceOperation
+        if form.place.is_a?(Forms::Call)
+          form_has_exit?(form.place, klass, boundaries)
+        else
+          false
+        end || form.arguments.any? { |argument| form_has_exit?(argument, klass, boundaries) }
       else
         false
       end
@@ -273,6 +287,9 @@ module Ruri
         when Forms::Iteration
           collect_expression_locals(statement.collection, names, shadowed)
           collect_locals(statement.body, names, shadowed + [statement.parameter])
+        when Forms::Times
+          collect_expression_locals(statement.count, names, shadowed)
+          collect_locals(statement.body, names, shadowed + [statement.parameter])
         when Forms::Rescue
           # The condition-case binding shadows the outer let inside the
           # form, but the name stays declared so reads after the block see
@@ -288,8 +305,13 @@ module Ruri
           collect_locals(statement.ensure_body, names, shadowed)
         when Forms::Catch
           collect_locals(statement.body, names, shadowed)
+        when Forms::Let
+          collect_locals(statement.body, names, shadowed + statement.parameters.names)
         when Forms::Throw
           collect_expression_locals(statement.value, names, shadowed)
+        when Forms::PlaceOperation
+          collect_expression_locals(statement.place, names, shadowed) if statement.place.is_a?(Forms::Call)
+          statement.arguments.each { |argument| collect_expression_locals(argument, names, shadowed) }
         when Forms::Break, Forms::Next, Forms::Return
           collect_expression_locals(statement.value, names, shadowed) if statement.value
         when Forms::Call
@@ -341,6 +363,11 @@ module Ruri
         collect_locals(expression.body, names, shadowed)
       when Forms::Throw
         collect_expression_locals(expression.value, names, shadowed)
+      when Forms::Let
+        collect_locals(expression.body, names, shadowed + expression.parameters.names)
+      when Forms::PlaceOperation
+        collect_expression_locals(expression.place, names, shadowed) if expression.place.is_a?(Forms::Call)
+        expression.arguments.each { |argument| collect_expression_locals(argument, names, shadowed) }
       when Forms::Iteration
         collect_expression_locals(expression.collection, names, shadowed)
         collect_locals(expression.body, names, shadowed + [expression.parameter])
@@ -351,6 +378,10 @@ module Ruri
       case value
       when Forms::Unquote, Forms::Splice
         collect_expression_locals(value.value, names, shadowed)
+      when Forms::QuasiQuote
+        # Nested templates carry only data: their escapes bind or read
+        # nothing in the surrounding definition.
+        collect_template_locals(value.value, names, shadowed)
       when Forms::ListValue, Forms::Vector
         value.elements.each { |element| collect_template_locals(element, names, shadowed) }
       when Forms::ConsValue
@@ -391,6 +422,8 @@ module Ruri
         lower_each(statement)
       when Forms::Iteration
         lower_iteration(statement)
+      when Forms::Times
+        lower_times(statement)
       when Forms::Rescue
         lower_rescue(statement)
       when Forms::Ensure
@@ -399,6 +432,10 @@ module Ruri
         lower_catch(statement)
       when Forms::Throw
         lower_throw(statement)
+      when Forms::Let
+        lower_let(statement)
+      when Forms::PlaceOperation
+        lower_place_operation(statement)
       when Forms::Break
         lower_exit(statement, @break_tags.last)
       when Forms::Next
@@ -491,6 +528,10 @@ module Ruri
         lower_catch(expression)
       when Forms::Throw
         lower_throw(expression)
+      when Forms::Let
+        lower_let(expression)
+      when Forms::PlaceOperation
+        lower_place_operation(expression)
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end
@@ -511,6 +552,51 @@ module Ruri
         Elisp.symbol("throw"),
         Elisp.quote(Elisp.symbol(throw_form.tag)),
         lower_expression(throw_form.value)
+      )
+    end
+
+    # Typed place operations lower with the place in its unevaluated
+    # position: (setf PLACE VALUE), (cl-incf PLACE [DELTA]), (pop PLACE),
+    # and push with its arguments reversed to (push VALUE PLACE). A
+    # variable or local place lowers to a bare symbol; a form place to
+    # the lowered call.
+    def lower_place_operation(operation)
+      place = case operation.place
+              when Forms::Call then lower_expression(operation.place)
+              else Elisp.symbol(operation.place.name)
+              end
+      values = operation.arguments.map { |argument| lower_expression(argument) }
+      items = if operation.name == "push"
+                [Elisp.symbol("push"), *values, place]
+              else
+                [Elisp.symbol(operation.name), place, *values]
+              end
+      Elisp.list(*items)
+    end
+
+    # `let` lowers to let*: the parser parsed each initializer with only
+    # the earlier bindings in scope, so sequential binding is the
+    # contract. A parameter without a default (or with a literal
+    # nil/false one) binds nil explicitly — the bare-symbol `(let* (x))`
+    # shape draws a byte-compiler "left uninitialized" warning.
+    def lower_let(let_form)
+      bindings = let_form.parameters.required.map do |name|
+        Elisp.list(Elisp.symbol(name), Elisp.symbol("nil"))
+      end
+      let_form.parameters.optionals.each do |optional|
+        bindings << if nil_default?(optional.default)
+                      Elisp.list(Elisp.symbol(optional.name), Elisp.symbol("nil"))
+                    else
+                      Elisp.list(
+                        Elisp.symbol(optional.name),
+                        lower_expression(optional.default)
+                      )
+                    end
+      end
+      Elisp.list(
+        Elisp.symbol("let*"),
+        Elisp.list(*bindings),
+        *let_form.body.map { |statement| lower_statement(statement) }
       )
     end
 
@@ -581,10 +667,21 @@ module Ruri
         )
       when Forms::Vector
         Elisp.vector(*value.elements.map { |element| lower_quoted_data(element) })
+      when Forms::Quote
+        Elisp.quote(lower_quoted_data(value.value))
+      when Forms::QuasiQuote
+        Elisp.quasiquote(lower_quoted_data(value.value))
       when Forms::Unquote
         Elisp.unquote(lower_expression(value.value))
       when Forms::Splice
         Elisp.splice(lower_expression(value.value))
+      # Depth ≥ 2 escapes stay data: their content was parsed as quoted
+      # data, so the unquote/splice is emitted around it for the inner
+      # template's own evaluation.
+      when Forms::NestedUnquote
+        Elisp.unquote(lower_quoted_data(value.value))
+      when Forms::NestedSplice
+        Elisp.splice(lower_quoted_data(value.value))
       else
         raise ArgumentError, "cannot lower quoted Ruri data: #{value.class}"
       end
@@ -652,6 +749,25 @@ module Ruri
           lower_expression(iteration.collection)
         )
       end
+    end
+
+    # `count.times` lowers to dotimes with an inline (COUNTER COUNT)
+    # binding and the body as trailing forms. The value is nil, matching
+    # dotimes rather than Ruby's Integer#times.
+    def lower_times(times_form)
+      break_tag, next_tag = enter_loop_scopes(times_form.body)
+      body = times_form.body.map { |statement| lower_statement(statement) }
+      leave_loop_scopes(break_tag, next_tag)
+      body = [catch_wrap(next_tag, body)] if next_tag
+      dotimes_form = Elisp.list(
+        Elisp.symbol("dotimes"),
+        Elisp.list(
+          Elisp.symbol(times_form.parameter),
+          lower_expression(times_form.count)
+        ),
+        *body
+      )
+      break_tag ? catch_wrap(break_tag, [dotimes_form]) : dotimes_form
     end
 
     # Shared lowering for `.each` and the iteration forms: enters the loop

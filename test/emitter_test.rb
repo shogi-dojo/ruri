@@ -469,4 +469,77 @@ class EmitterTest < Minitest::Test
     ruri--local-items)
     ELISP
   end
+
+  def test_emits_let_as_let_star
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :scoped do
+        doc "Bind sequentially."
+        base = 2
+        let do |c, a = base, b = a|
+          list(a, b, c)
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (let (ruri--local-base)
+    (setq ruri--local-base 2)
+    (let*
+      (
+        (ruri--local-c nil)
+        (ruri--local-a ruri--local-base)
+        (ruri--local-b ruri--local-a))
+      (list ruri--local-a ruri--local-b ruri--local-c)))
+    ELISP
+  end
+
+  def test_emits_times_as_dotimes
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :beep do
+        doc "Ring thrice."
+        3.times do |i|
+          el.message("%d", i)
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (dotimes
+    (ruri--local-i 3)
+    (message "%d" ruri--local-i))
+    ELISP
+  end
+
+  def test_emits_place_operations_in_unevaluated_positions
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :mutate do
+        doc "Typed places."
+        cell = list(:a)
+        el.setf(el.car(cell), 1)
+        el.push(2, :hook_var)
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+    (setf
+      (car ruri--local-cell)
+      1)
+    (push 2 hook-var)
+    ELISP
+  end
+
+  def test_emits_nested_quasiquotation
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :nested_cmd do
+        interactive
+        template = quasiquote(list(:a, quasiquote(list(:b, unquote(:flag)))))
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+    (setq ruri--local-template
+      `(a
+        `(b ,flag))))
+    ELISP
+  end
 end

@@ -531,6 +531,134 @@
     ;; An empty selection is Elisp nil, and find misses too.
     (should (equal '(nil nil) (ruri-test-stats (list 1))))))
 
+(ert-deftest ruri-test/let-bindings-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri let " t))
+         (source (expand-file-name "let-bindings.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_let_values do\n"
+              "  doc \"Sequential bindings and the nil idiom.\"\n"
+              "  base = 10\n"
+              "  let do |c, a = base, b = a|\n"
+              "    list(a, b, c)\n"
+              "  end\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_let_shadowing do\n"
+              "  doc \"The let binding shadows and restores the outer local.\"\n"
+              "  x = \"outer\"\n"
+              "  captured = let do |x = \"inner\"|\n"
+              "    x\n"
+              "  end\n"
+              "  list(captured, x)\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_let_keeps_builtins_reachable do\n"
+              "  doc \"A binding named message must not shadow the Elisp function.\"\n"
+              "  list(el.message(\"ok\"), let do |message = 5| message end)\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_return_from_let do\n"
+              "  doc \"Return targets the definition across the let.\"\n"
+              "  let do |x = 1|\n"
+              "    return :done\n"
+              "  end\n"
+              "  :unreached\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; Sequential defaults: a reads base, b reads the new a, c binds nil.
+    (should (equal '(10 10 nil) (ruri-test-let-values)))
+    ;; The let binding shadows the outer local and is restored after.
+    (should (equal '("inner" "outer") (ruri-test-let-shadowing)))
+    ;; A binding named message must not shadow the Elisp function.
+    (should (equal '("ok" 5) (ruri-test-let-keeps-builtins-reachable)))
+    ;; return targets the enclosing definition from inside the let.
+    (should (eq 'done (ruri-test-return-from-let)))))
+
+(ert-deftest ruri-test/times-loops-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri times " t))
+         (source (expand-file-name "times.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_times_sums do\n"
+              "  doc \"Counting loop with next and break.\"\n"
+              "  total = 0\n"
+              "  5.times do |i|\n"
+              "    next if i == 2\n"
+              "    total = total + i\n"
+              "  end\n"
+              "  9.times do |i|\n"
+              "    break if i == 1\n"
+              "    total = total + 10\n"
+              "  end\n"
+              "  total\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_times_value do\n"
+              "  doc \"dotimes yields nil, unlike Ruby's Integer#times.\"\n"
+              "  3.times do |i|\n"
+              "    el.identity(i)\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; next skips i == 2, so 0 + 1 + 3 + 4; break fires on the second
+    ;; pass, adding 10 exactly once.
+    (should (= 18 (ruri-test-times-sums)))
+    ;; The loop form itself contributes no value.
+    (should (null (ruri-test-times-value)))))
+
+(ert-deftest ruri-test/place-operations-mutate-in-emacs ()
+  (let* ((dir (make-temp-file "ruri places " t))
+         (source (expand-file-name "places.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_place_stack, nil\n"
+              "\n"
+              "function :ruri_test_place_ops do\n"
+              "  doc \"Typed places on forms, Elisp vars, and Ruri locals.\"\n"
+              "  cell = list(:a)\n"
+              "  el.setf(el.car(cell), 1)\n"
+              "  el.setf(:ruri_test_place_stack, list(1))\n"
+              "  el.push(2, :ruri_test_place_stack)\n"
+              "  popped = el.pop(:ruri_test_place_stack)\n"
+              "  n = 5\n"
+              "  el.cl_incf(n)\n"
+              "  el.cl_incf(n, 10)\n"
+              "  el.cl_decf(n)\n"
+              "  list(cell, var(:ruri_test_place_stack), popped, n)\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; setf through (car …) mutates the cons; push/pop and setf hit the
+    ;; Elisp variable without quoting it; cl-incf/cl-decf mutate a local.
+    (should (equal '((1) (1) 2 15) (ruri-test-place-ops)))
+    (should (equal '(1) ruri-test-place-stack))))
+
+(ert-deftest ruri-test/nested-quasiquotation-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri nested qq " t))
+         (source (expand-file-name "nested-qq.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_flag, nil\n"
+              "\n"
+              "function :ruri_test_one_level do\n"
+              "  doc \"The ,escape stays data until the inner template runs.\"\n"
+              "  quasiquote(list(:a, quasiquote(list(:b, unquote(:ruri_test_flag)))))\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_two_level do\n"
+              "  doc \"The ,,escape evaluates when the outer template runs.\"\n"
+              "  quasiquote(list(:c, quasiquote(list(:d, unquote(unquote(el.concat(\"x\", \"y\")))))))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (let ((one (ruri-test-one-level))
+          (two (ruri-test-two-level)))
+      ;; The outer quasiquote keeps the inner one as unevaluated data
+      ;; (printed with the raw backquote symbol).
+      (should (equal "(a `(b ,ruri-test-flag))" (format "%S" one)))
+      (setq ruri-test-flag 5)
+      ;; Evaluating the inner template escapes the remaining level.
+      (should (equal '(b 5) (eval (cadr one) t)))
+      ;; A doubled unquote evaluates at the outer level and keeps one
+      ;; comma for the inner evaluation.
+      (should (equal "(c `(d ,\"xy\"))" (format "%S" two)))
+      (should (equal '(d "xy") (eval (cadr two) t))))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

@@ -97,6 +97,13 @@ module Ruri
     QuasiQuote = Data.define(:value)
     Unquote = Data.define(:value)
     Splice = Data.define(:value)
+    # Nested-template escapes: an `unquote`/`splice` written at template
+    # depth ≥ 2 escapes exactly one level, so its content is still quoted
+    # data (materialized when the inner template itself is evaluated),
+    # never a runtime expression. Unquote/Splice above are the depth-1
+    # escapes whose content is an ordinary expression.
+    NestedUnquote = Data.define(:value)
+    NestedSplice = Data.define(:value)
 
     # Ruby operators retain their evaluation shape while using Elisp runtime
     # semantics. +negated+ represents != without inventing another primitive.
@@ -117,6 +124,28 @@ module Ruri
     # The block's final expression maps the element. Kept distinct from
     # side-effecting `.each`, which lowers to mapc.
     Iteration = Data.define(:name, :collection, :parameter, :body)
+
+    # Scoped bindings: `let do |a = 1, b = a + 1, c| … end`. +parameters+
+    # is a hygienic ParameterList whose rest slot is always nil (rejected
+    # by the parser). Initializers were parsed left to right, so each may
+    # read the bindings before it; lowering emits `let*`, and a parameter
+    # without a default binds nil. The body's final form supplies the
+    # value, and the bindings are visible only inside the block.
+    Let = Data.define(:parameters, :body)
+
+    # Counting loop: `count.times do |i| … end` lowers to dotimes with a
+    # hygienic counter. The form's value is nil, matching dotimes rather
+    # than Ruby's Integer#times.
+    Times = Data.define(:count, :parameter, :body)
+
+    # Typed generalized-place assignment: el.setf, el.push, el.pop,
+    # el.cl_incf, and el.cl_decf. +place+ is an unevaluated position —
+    # a VarRead (Elisp variable symbol), LocalRead (Ruri local), or Call
+    # (an el.* form such as (car x)) — so these are typed forms rather
+    # than generic calls that would quote or evaluate the place. +name+
+    # is the normalized Elisp operator name; +arguments+ are the value
+    # expressions in Elisp argument order (push takes its value first).
+    PlaceOperation = Data.define(:name, :place, :arguments)
 
     # `begin/rescue[/else]` lowered to condition-case. +var+ is the hygienic
     # error-object binding shared by every clause, or nil. +clauses+ are
