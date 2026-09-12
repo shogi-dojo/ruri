@@ -237,4 +237,68 @@ class PackageFormsTest < Minitest::Test
       assert_match(/is only allowed at the top level of a \.ruri file/, diag.message)
     end
   end
+
+  def test_var_read_emits_bare_symbol
+    output = compile_source(<<~RURI)
+      command :show_case_cmd do
+        interactive
+        style = var :case_fold_search
+        el.message("%S" , style)
+      end
+    RURI
+
+    assert_includes output, "(setq ruri--local-style case-fold-search)"
+    assert_includes output, '(message "%S" ruri--local-style)'
+  end
+
+  def test_var_read_normalizes_underscores
+    output = compile_source(<<~RURI)
+      command :show_cmd do
+        interactive
+        el.message("%S", var(:left_margin_width))
+      end
+    RURI
+
+    assert_includes output, "(message \"%S\" left-margin-width)"
+  end
+
+  def test_var_read_works_in_conditions_and_collections
+    output = compile_source(<<~RURI)
+      command :report_cmd do
+        interactive
+        if var :auto_fill_mode
+          el.message("on")
+        end
+        total = var :fill_column
+el.message("%S", list(total, 2))
+      end
+    RURI
+
+    assert_includes output, "(if auto-fill-mode"
+    assert_includes output, "(setq ruri--local-total fill-column)"
+  end
+
+  def test_rejects_var_reads_with_wrong_arguments
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive
+        el.message("%S", var())
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/var requires exactly one literal symbol argument/, diags.first.message)
+  end
+
+  def test_rejects_var_reads_of_reserved_names
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive
+        el.message("%S", var(:nil))
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/invalid variable name `nil`/, diags.first.message)
+  end
 end

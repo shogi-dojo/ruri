@@ -841,6 +841,7 @@ module Ruri
         return parse_cons_value(node) if unqualified_call?(node, :cons)
         return parse_quote(node) if unqualified_call?(node, :quote)
         return parse_quasiquote(node) if unqualified_call?(node, :quasiquote)
+        return parse_var_read(node) if unqualified_call?(node, :var)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -877,6 +878,34 @@ module Ruri
       @local_names&.include?(node.name.to_s) &&
         node.receiver.nil? && node.arguments.nil? && node.block.nil? &&
         node.opening_loc.nil?
+    end
+
+    # `var :name` reads the dynamic value of an Emacs Lisp variable and
+    # lowers to the bare symbol, without the quote a symbol literal gets.
+    def parse_var_read(node)
+      if node.block
+        error(node.location, "var does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "var does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 1
+        error(node.location, "var requires exactly one literal symbol argument")
+        return nil
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+      unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+        error(positional[0].location,
+              "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return nil
+      end
+
+      Forms::VarRead.new(source_name: source_name, name: source_name.tr("_", "-"))
     end
 
     def parse_lambda(node)

@@ -261,6 +261,8 @@ module Ruri
         lower_literal(expression)
       when Forms::LocalRead
         Elisp.symbol(expression.name)
+      when Forms::VarRead
+        Elisp.symbol(expression.name)
       when Forms::Lambda
         Elisp.list(
           Elisp.symbol("lambda"),
