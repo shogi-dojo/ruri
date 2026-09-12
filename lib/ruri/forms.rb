@@ -5,15 +5,66 @@ module Ruri
   # produces these from the Prism AST; the lowerer converts them to generic
   # Elisp nodes, so source values never become output structure directly.
   module Forms
+    # An `&optional` parameter. +name+ is the hygienic Elisp argument name
+    # and +default+ is the parsed entry-time default expression, or nil for
+    # plain Elisp nil-defaulting.
+    OptionalParameter = Data.define(:name, :default)
+    # An `&rest` parameter collecting remaining arguments under +name+.
+    RestParameter = Data.define(:name)
+    # Parameter list for functions, lambdas, and commands. +required+ is an
+    # array of hygienic names; +rest+ is a RestParameter or nil.
+    ParameterList = Data.define(:required, :optionals, :rest) do
+      def names
+        required + optionals.map(&:name) + (rest ? [rest.name] : [])
+      end
+
+      def empty?
+        required.empty? && optionals.empty? && rest.nil?
+      end
+    end
+
     # Top-level command definition.
     # +source_name+ is the symbol as written; +name+ is the Emacs Lisp
     # name after `_` -> `-` conversion.
-    Command = Data.define(:source_name, :name, :body)
-    # Top-level noninteractive function with hygienic required parameters.
+    Command = Data.define(:source_name, :name, :parameters, :body)
+    # Top-level noninteractive function with hygienic parameters.
     FunctionDefinition = Data.define(:source_name, :name, :parameters, :body)
 
-    # The required first statement of every command body.
-    Interactive = Data.define
+    # Top-level variable definitions. +value+ is nil for a valueless
+    # defvar; +docstring+ is an optional source string.
+    VariableDefinition = Data.define(:source_name, :name, :value, :docstring)
+    ConstantDefinition = Data.define(:source_name, :name, :value, :docstring)
+
+    # Top-level customizable variable. +type+ is an optional expression
+    # lowered after the :type keyword.
+    CustomDefinition = Data.define(:source_name, :name, :value, :docstring, :keywords)
+
+    # Top-level buffer-local variable definition (defvar-local).
+    VariableLocalDefinition = Data.define(:source_name, :name, :value, :docstring)
+
+    # Statement form assigning to Emacs Lisp variables (setq). Pairs are
+    # [name, value_expression] in source order.
+    Assign = Data.define(:pairs)
+
+    # Elisp keyword symbol (:begin, :end), self-quoting in Elisp.
+    Keyword = Data.define(:source_name, :name)
+
+    # Top-level feature declarations: (require 'name) / (provide 'name).
+    Require = Data.define(:source_name, :name)
+    Provide = Data.define(:source_name, :name)
+
+    # Reading the dynamic value of an Emacs Lisp variable.
+    VarRead = Data.define(:source_name, :name)
+
+    # The required first statement of every command body. +spec+ is the
+    # optional interactive specification: a string-literal expression form
+    # (as Emacs reads it, e.g. "P" for the raw prefix argument), or nil for
+    # a plain `(interactive)`.
+    Interactive = Data.define(:spec)
+
+    # Documentation string. Only valid as the first statement of a command
+    # or function body; lowers to a dedicated Elisp docstring node.
+    Docstring = Data.define(:text)
 
     # Buffer-scoped block: body statements run inside the named buffer.
     WithCurrentBuffer = Data.define(:buffer, :body)
@@ -33,8 +84,9 @@ module Ruri
     # Ruby array syntax denotes an Emacs Lisp vector value.
     Vector = Data.define(:elements)
 
-    # First-class function values. Lambda parameters are hygienic Elisp names;
-    # a named reference lowers to (function NAME) without quoting NAME as data.
+    # First-class function values. Lambda parameters are a hygienic
+    # ParameterList; a named reference lowers to (function NAME) without
+    # quoting NAME as data.
     Lambda = Data.define(:parameters, :body)
     FunctionReference = Data.define(:source_name, :name)
 

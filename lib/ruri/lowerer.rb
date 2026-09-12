@@ -15,6 +15,12 @@ module Ruri
         case definition
         when Forms::Command then lower_command(definition)
         when Forms::FunctionDefinition then lower_function_definition(definition)
+        when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
+        when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
+        when Forms::VariableLocalDefinition then lower_variable_definition(definition, "defvar-local")
+        when Forms::CustomDefinition then lower_custom_definition(definition)
+        when Forms::Require then lower_feature(definition, "require")
+        when Forms::Provide then lower_feature(definition, "provide")
         else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
         end
       end
@@ -23,43 +29,131 @@ module Ruri
     private
 
     def lower_command(command)
-      body = command.body.map { |statement| lower_statement(statement) }
-      locals = collect_locals(command.body)
-      unless locals.empty?
-        interactive, *statements = body
-        scope = Elisp.list(
-          Elisp.symbol("let"),
-          Elisp.inline_list(*locals.map { |name| Elisp.symbol(name) }),
-          *statements
-        )
-        body = [interactive, scope]
-      end
+      doc_form, statements = partition_docstring(command.body)
+      interactive_form, *rest = statements
+      lowered_rest = rest.map { |statement| lower_statement(statement) }
+      locals = collect_locals(rest)
+      lowered_rest = wrap_locals(locals, lowered_rest) unless locals.empty?
+      lowered_rest = lower_parameter_defaults(command.parameters) + lowered_rest
 
       Elisp.list(
         Elisp.symbol("defun"),
         Elisp.symbol(command.name),
-        Elisp.inline_list,
-        *body
+        lower_parameter_list(command.parameters),
+        *doc_form,
+        lower_statement(interactive_form),
+        *lowered_rest
       )
     end
 
     def lower_function_definition(function)
-      body = function.body.map { |statement| lower_statement(statement) }
-      locals = collect_locals(function.body, [], function.parameters)
-      unless locals.empty?
-        body = [Elisp.list(
-          Elisp.symbol("let"),
-          Elisp.inline_list(*locals.map { |name| Elisp.symbol(name) }),
-          *body
-        )]
-      end
+      doc_form, statements = partition_docstring(function.body)
+      lowered = statements.map { |statement| lower_statement(statement) }
+      locals = collect_locals(statements, [], function.parameters.names)
+      lowered = wrap_locals(locals, lowered) unless locals.empty?
+      lowered = lower_parameter_defaults(function.parameters) + lowered
 
       Elisp.list(
         Elisp.symbol("defun"),
         Elisp.symbol(function.name),
-        Elisp.inline_list(*function.parameters.map { |name| Elisp.symbol(name) }),
-        *body
+        lower_parameter_list(function.parameters),
+        *doc_form,
+        *lowered
       )
+    end
+
+    # The defun argument list: required names, then `&optional` and `&rest`
+    # sections in binding order.
+    def lower_parameter_list(parameters)
+      items = parameters.required.map { |name| Elisp.symbol(name) }
+      unless parameters.optionals.empty?
+        items << Elisp.symbol("&optional")
+        parameters.optionals.each { |optional| items << Elisp.symbol(optional.name) }
+      end
+      if parameters.rest
+        items << Elisp.symbol("&rest")
+        items << Elisp.symbol(parameters.rest.name)
+      end
+      Elisp.inline_list(*items)
+    end
+
+    # Optional parameters with an expression default are applied at entry
+    # with `(unless name (setq name default))`, because plain defun
+    # arguments have no per-argument default form. A literal nil or false
+    # default lowers to nil, which is exactly Elisp's own behavior, so it
+    # needs no code.
+    def lower_parameter_defaults(parameters)
+      parameters.optionals.filter_map do |optional|
+        next nil if nil_default?(optional.default)
+
+        name = Elisp.symbol(optional.name)
+        Elisp.list(
+          Elisp.symbol("unless"),
+          name,
+          Elisp.list(Elisp.symbol("setq"), name, lower_expression(optional.default))
+        )
+      end
+    end
+
+    def nil_default?(default)
+      default.is_a?(Forms::Literal) && %i[nil false].include?(default.kind)
+    end
+
+    # The parser places at most one Forms::Docstring at the head of a
+    # definition body. It lowers to a dedicated node and stays outside any
+    # lexical `let`, matching conventional Elisp layout.
+    def partition_docstring(statements)
+      if statements.first.is_a?(Forms::Docstring)
+        [lower_docstring(statements.first), statements[1..]]
+      else
+        [[], statements]
+      end
+    end
+
+    def lower_variable_definition(definition, lisp_form)
+      items = [Elisp.symbol(lisp_form), Elisp.symbol(definition.name)]
+      items << lower_expression(definition.value) if definition.value
+      items << lower_docstring_text(definition.docstring) if definition.docstring
+      Elisp.list(*items)
+    end
+
+    def lower_custom_definition(definition)
+      items = [
+        Elisp.symbol("defcustom"),
+        Elisp.symbol(definition.name),
+        lower_expression(definition.value)
+      ]
+      items << lower_docstring_text(definition.docstring) if definition.docstring
+      definition.keywords.each do |key, expression|
+        items << Elisp.inline_sequence(
+          Elisp.symbol(":#{key}"),
+          lower_expression(expression)
+        )
+      end
+      Elisp.list(*items)
+    end
+
+    def lower_feature(definition, lisp_form)
+      Elisp.list(
+        Elisp.symbol(lisp_form),
+        Elisp.quote(Elisp.symbol(definition.name))
+      )
+    end
+
+    def lower_docstring_text(text)
+      Elisp.docstring(Elisp.string(text))
+    end
+
+    def wrap_locals(locals, forms)
+      [Elisp.list(
+        Elisp.symbol("let"),
+        Elisp.inline_list(*locals.map { |name| Elisp.symbol(name) }),
+        *forms
+      )]
+    end
+
+    def lower_docstring(docstring)
+      lower_docstring_text(docstring.text)
     end
 
     def collect_locals(statements, names = [], shadowed = [])
@@ -110,7 +204,7 @@ module Ruri
         collect_expression_locals(expression.car, names, shadowed)
         collect_expression_locals(expression.cdr, names, shadowed)
       when Forms::Lambda
-        collect_locals(expression.body, names, shadowed + expression.parameters)
+        collect_locals(expression.body, names, shadowed + expression.parameters.names)
       when Forms::QuasiQuote
         collect_template_locals(expression.value, names, shadowed)
       when Forms::Operation
@@ -135,7 +229,11 @@ module Ruri
     def lower_statement(statement)
       case statement
       when Forms::Interactive
-        Elisp.list(Elisp.symbol("interactive"))
+        items = [Elisp.symbol("interactive")]
+        items << lower_expression(statement.spec) if statement.spec
+        Elisp.list(*items)
+      when Forms::Docstring
+        lower_docstring(statement)
       when Forms::Insert
         Elisp.list(Elisp.symbol("insert"), Elisp.string(statement.text))
       when Forms::WithCurrentBuffer
@@ -168,6 +266,13 @@ module Ruri
         )
       when Forms::ExpressionStatement
         lower_expression(statement.expression)
+      when Forms::Assign
+        items = [Elisp.symbol("setq")]
+        statement.pairs.each do |name, value|
+          items << Elisp.symbol(name)
+          items << lower_expression(value)
+        end
+        Elisp.list(*items)
       else
         raise ArgumentError, "cannot lower Ruri form: #{statement.class}"
       end
@@ -205,10 +310,15 @@ module Ruri
         lower_literal(expression)
       when Forms::LocalRead
         Elisp.symbol(expression.name)
+      when Forms::VarRead
+        Elisp.symbol(expression.name)
+      when Forms::Keyword
+        Elisp.symbol(expression.name)
       when Forms::Lambda
         Elisp.list(
           Elisp.symbol("lambda"),
-          Elisp.inline_list(*expression.parameters.map { |name| Elisp.symbol(name) }),
+          lower_parameter_list(expression.parameters),
+          *lower_parameter_defaults(expression.parameters),
           *expression.body.map { |statement| lower_statement(statement) }
         )
       when Forms::FunctionReference

@@ -61,7 +61,7 @@ class ParserTest < Minitest::Test
     factorial, decorate = definitions
     assert_instance_of Ruri::Forms::FunctionDefinition, factorial
     assert_equal "factorial", factorial.name
-    assert_equal ["ruri--local-number"], factorial.parameters
+    assert_equal ["ruri--local-number"], factorial.parameters.names
     conditional = factorial.body.first
     assert_instance_of Ruri::Forms::Conditional, conditional
     assert_instance_of Ruri::Forms::ExpressionStatement,
@@ -70,7 +70,7 @@ class ParserTest < Minitest::Test
                        conditional.else_body.first.expression
 
     assert_instance_of Ruri::Forms::FunctionDefinition, decorate
-    assert_equal ["ruri--local-value"], decorate.parameters
+    assert_equal ["ruri--local-value"], decorate.parameters.names
     assert_instance_of Ruri::Forms::LocalWrite, decorate.body.first
     assert_instance_of Ruri::Forms::Call, decorate.body.last
   end
@@ -102,15 +102,76 @@ class ParserTest < Minitest::Test
     assert_equal 5, diag.line
   end
 
-  def test_rejects_optional_function_parameters
+  def test_rejects_keyword_function_parameters
     diag = single_diagnostic(<<~RURI)
-      function :optional do |value = nil|
+      function :keyworded do |value, scale: 1|
         value
       end
     RURI
 
-    assert_match(/function supports only required positional block parameters/, diag.message)
+    assert_match(/function supports only required, optional, and rest positional block parameters/, diag.message)
     assert_equal 1, diag.line
+  end
+
+  def test_rejects_post_rest_function_parameters
+    diag = single_diagnostic(<<~RURI)
+      function :posted do |first, *rest, last|
+        first
+      end
+    RURI
+
+    assert_match(/function supports only required, optional, and rest positional block parameters/, diag.message)
+    assert_equal 1, diag.line
+  end
+
+  def test_rejects_block_function_parameters
+    diag = single_diagnostic(<<~RURI)
+      function :blocked do |value, &callback|
+        value
+      end
+    RURI
+
+    assert_match(/function supports only required, optional, and rest positional block parameters/, diag.message)
+    assert_equal 1, diag.line
+  end
+
+  def test_parses_optional_and_rest_function_parameters
+    function = parse(<<~RURI).first
+      function :greet do |name, punctuation = "!", *extra|
+        el.message(name, punctuation, extra)
+      end
+    RURI
+
+    parameters = function.parameters
+    assert_equal ["ruri--local-name"], parameters.required
+    assert_equal 1, parameters.optionals.length
+    assert_equal "ruri--local-punctuation", parameters.optionals.first.name
+    assert_equal "!", parameters.optionals.first.default.value
+    assert_equal "ruri--local-extra", parameters.rest.name
+    assert_equal %w[ruri--local-name ruri--local-punctuation ruri--local-extra],
+                 parameters.names
+  end
+
+  def test_parses_optional_default_referencing_a_parameter
+    function = parse(<<~RURI).first
+      function :scale do |width, fallback = width|
+        el.message("%S", fallback)
+      end
+    RURI
+
+    default = function.parameters.optionals.first.default
+    assert_instance_of Ruri::Forms::LocalRead, default
+    assert_equal "ruri--local-width", default.name
+  end
+
+  def test_rejects_optional_default_of_a_bare_call
+    diag = single_diagnostic(<<~RURI)
+      function :broken do |width, fallback = unknown|
+        el.message("%S", fallback)
+      end
+    RURI
+
+    assert_match(/unsupported expression: use a Ruri expression or an el\.\* call/, diag.message)
   end
 
   def test_rejects_interactive_inside_function
@@ -237,7 +298,7 @@ class ParserTest < Minitest::Test
 
     lambda = command.body[2].value
     assert_instance_of Ruri::Forms::Lambda, lambda
-    assert_equal %w[ruri--local-value ruri--local-index], lambda.parameters
+    assert_equal %w[ruri--local-value ruri--local-index], lambda.parameters.names
     assert_equal "ruri--local-prefix", lambda.body.first.arguments[1].name
     assert_equal "ruri--local-value", lambda.body.first.arguments[2].name
 
@@ -335,13 +396,13 @@ class ParserTest < Minitest::Test
     diag = single_diagnostic(<<~RURI)
       command :callbacks do
         interactive
-        callback = fn do |value = nil|
+        callback = fn do |value = nil, key: 1|
           el.identity(value)
         end
       end
     RURI
 
-    assert_match(/fn supports only required positional block parameters/, diag.message)
+    assert_match(/fn supports only required, optional, and rest positional block parameters/, diag.message)
     assert_equal 3, diag.line
   end
 
@@ -796,12 +857,53 @@ end')
     assert_equal 3, diag.line
   end
 
-  def test_rejects_interactive_with_arguments
-    diag = single_diagnostic('command :a do
-  interactive("p")
-end')
+  def test_rejects_interactive_with_multiple_arguments
+    diags = diagnostics_of(<<~'RURI')
+      command :a do
+        interactive "p", "r"
+      end
+    RURI
 
-    assert_match(/interactive takes no arguments/, diag.message)
+    assert_equal 1, diags.size
+    assert_match(/interactive takes at most one literal string argument/, diags[0].message)
+  end
+
+  def test_rejects_interactive_with_non_string_spec
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive :p
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/literal string argument required/, diags[0].message)
+  end
+
+  def test_parses_command_parameters_and_interactive_spec
+    command = parse(<<~RURI).first
+      command :jump_cmd do |argument, raw_prefix = nil|
+        doc "Jump to ARGUMENT."
+        interactive "P"
+        el.message("%s %s", argument, raw_prefix)
+      end
+    RURI
+
+    assert_equal ["ruri--local-argument", "ruri--local-raw-prefix"],
+                 command.parameters.names
+    interactive = command.body[1]
+    assert_instance_of Ruri::Forms::Interactive, interactive
+    assert_equal "P", interactive.spec.value
+  end
+
+  def test_parses_interactive_without_spec
+    command = parse(<<~RURI).first
+      command :plain_cmd do
+        interactive
+        insert("hi")
+      end
+    RURI
+
+    assert_nil command.body[0].spec
   end
 
   def test_rejects_interactive_inside_buffer_block
@@ -834,10 +936,11 @@ end')
     assert_match(/exactly one literal symbol argument/, diag.message)
   end
 
-  def test_rejects_command_block_parameters
-    diag = single_diagnostic("command :a do |x|\n  interactive\nend")
+  def test_rejects_reserved_command_parameter_name
+    diag = single_diagnostic("command :a do |t|\n  interactive\nend")
 
-    assert_match(/do not take parameters/, diag.message)
+    assert_match(/invalid command parameter name `t`/, diag.message)
+    assert_equal 1, diag.line
   end
 
   def test_rejects_nested_command
@@ -966,5 +1069,91 @@ end')
   def test_accepts_empty_file
     assert_equal [], parse("")
     assert_equal [], parse("# only a comment\n")
+  end
+
+  def test_parses_docstring_in_command_body
+    commands = parse(<<~RURI)
+      command :greet_cmd do
+        doc "Greet the world."
+        interactive
+        insert("hi")
+      end
+    RURI
+
+    assert_instance_of Ruri::Forms::Docstring, commands.first.body[0]
+    assert_equal "Greet the world.", commands.first.body[0].text
+    assert_instance_of Ruri::Forms::Interactive, commands.first.body[1]
+  end
+
+  def test_parses_docstring_in_function_body
+    functions = parse(<<~RURI)
+      function :double_it do |number|
+        doc "Double NUMBER."
+        number * 2
+      end
+    RURI
+
+    assert_equal "Double NUMBER.", functions.first.body[0].text
+  end
+
+  def test_rejects_docstring_not_first
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        doc "Late."
+      end
+    RURI
+
+    assert_equal 3, diag.line
+    assert_match(/doc is only allowed once, as the first statement/, diag.message)
+  end
+
+  def test_rejects_second_docstring
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        doc "First."
+        doc "Second."
+        interactive
+      end
+    RURI
+
+    assert_equal 2, diags.size
+    assert_equal 3, diags.first.line
+    assert_match(/doc is only allowed once/, diags.first.message)
+  end
+
+  def test_rejects_docstring_with_non_string_argument
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        doc(:not_a_string)
+        interactive
+      end
+    RURI
+
+    assert_match(/literal string argument required/, diag.message)
+  end
+
+  def test_rejects_command_without_interactive_after_docstring
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        doc "Doc only."
+        insert("x")
+      end
+    RURI
+
+    assert_match(/command body must start with interactive/, diag.message)
+  end
+
+  def test_rejects_docstring_outside_definitions
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        with_current_buffer("*scratch*") do
+          doc "Nested."
+        end
+      end
+    RURI
+
+    assert_match(/doc is only allowed once, as the first statement/, diag.message)
   end
 end

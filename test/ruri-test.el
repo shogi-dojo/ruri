@@ -284,5 +284,135 @@
       (call-interactively #'function-cmd)
       (should (equal "120/<x>/24" (buffer-string))))))
 
-(provide 'ruri-test)
+(ert-deftest ruri-test/package-forms-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri package " t))
+         (source (expand-file-name "package.ruri" dir)))
+    (with-temp-file source
+      (insert "require :subr_x\n"
+              "\n"
+              "variable :ruri_test_counter, 7, \"Counter for tests.\"\n"
+              "\n"
+              "custom :ruri_test_style, :plain, \"Style setting.\", type: :symbol\n"
+              "\n"
+              "command :ruri_test_greet_cmd do\n"
+              "  doc \"Greet using the test counter.\"\n"
+              "  interactive\n"
+              "  el.insert(el.format(\"count=%d style=%S folded=%S\",\n"
+              "                      var(:ruri_test_counter),\n"
+              "                      var(:ruri_test_style),\n"
+              "                      var(:case_fold_search)))\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_double do |n|\n"
+              "  doc \"Double N.\"\n"
+              "  n * 2\n"
+              "end\n"
+              "\n"
+              "provide :ruri_test_pack\n"))
+    (ruri-load-file source)
+    (should (featurep (quote ruri-test-pack)))
+    (should (= 7 (default-value (quote ruri-test-counter))))
+    (should (eq (quote plain) (default-value (quote ruri-test-style))))
+    (should (eq (quote symbol) (get (quote ruri-test-style) (quote custom-type))))
+    (should (commandp (quote ruri-test-greet-cmd)))
+    (with-temp-buffer
+      (call-interactively (quote ruri-test-greet-cmd))
+      (should (string-prefix-p "count=7 style=plain" (buffer-string))))
+    (should (= 84 (ruri-test-double 42)))
+    (should (equal "Greet using the test counter."
+                   (documentation (quote ruri-test-greet-cmd))))
+    (should (equal "Double N." (documentation (quote ruri-test-double))))))
+
+(ert-deftest ruri-test/optional-and-rest-parameters-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri params " t))
+         (source (expand-file-name "params.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_greet do |name, punctuation = \"!\"|\n"
+              "  doc \"Greet NAME with PUNCTUATION.\"\n"
+              "  el.concat(name, punctuation)\n"
+              "end\n\n"
+              "function :ruri_test_fallback do |value, fallback = \"d\"|\n"
+              "  doc \"Return VALUE, or FALLBACK when VALUE is nil.\"\n"
+              "  if value\n"
+              "    value\n"
+              "  else\n"
+              "    fallback\n"
+              "  end\n"
+              "end\n\n"
+              "function :ruri_test_count do |first, *more|\n"
+              "  doc \"Describe FIRST and the rest.\"\n"
+              "  el.concat(first, el.format(\"/%d\", el.length(more)))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (equal "hi!" (ruri-test-greet "hi")))
+    (should (equal "hi?" (ruri-test-greet "hi" "?")))
+    ;; An entry-time default re-applies when nil is passed explicitly;
+    ;; this documents the plain-defun nil-collision semantics.
+    (should (equal "d" (ruri-test-fallback nil)))
+    (should (equal "v" (ruri-test-fallback "v")))
+    (should (equal "a/2" (ruri-test-count "a" "b" "c")))
+    (should (equal "a/0" (ruri-test-count "a")))))
+
+(ert-deftest ruri-test/command-parameters-and-interactive-specs-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri commands " t))
+         (source (expand-file-name "commands.ruri" dir)))
+    (with-temp-file source
+      (insert "command :ruri_test_echo_cmd do |count, punctuation = \"!\"|\n"
+              "  doc \"Insert COUNT and PUNCTUATION.\"\n"
+              "  interactive \"p\"\n"
+              "  el.insert(el.format(\"%d%s\", count, punctuation))\n"
+              "end\n\n"
+              "command :ruri_test_prefix_cmd do |raw_prefix|\n"
+              "  doc \"Insert the raw prefix argument.\"\n"
+              "  interactive \"P\"\n"
+              "  el.insert(el.format(\"%S\", raw_prefix))\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The interactive string spec feeds the command parameter; the
+    ;; optional punctuation default applies for the missing second arg.
+    (with-temp-buffer
+      (let ((current-prefix-arg nil))
+        (call-interactively #'ruri-test-echo-cmd))
+      (should (equal "1!" (buffer-string))))
+    (with-temp-buffer
+      (let ((current-prefix-arg 7))
+        (call-interactively #'ruri-test-echo-cmd))
+      (should (equal "7!" (buffer-string))))
+    ;; "P" passes the raw prefix argument through to the parameter.
+    (with-temp-buffer
+      (let ((current-prefix-arg '(4)))
+        (call-interactively #'ruri-test-prefix-cmd))
+      (should (equal "(4)" (buffer-string))))
+    (with-temp-buffer
+      (let ((current-prefix-arg nil))
+        (call-interactively #'ruri-test-prefix-cmd))
+      (should (equal "nil" (buffer-string))))))
+
+(ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri org-fragtog " t))
+         (source (expand-file-name "org-fragtog.ruri" dir)))
+    (copy-file (expand-file-name "examples/org-fragtog.ruri" ruri-test--root) source t)
+    (ruri-load-file source)
+    (should (featurep (quote org-fragtog)))
+    (should (fboundp (quote org-fragtog-mode)))
+    (should (fboundp (quote org-fragtog--post-cmd)))
+    (should (= 0.0 org-fragtog-preview-delay))
+    (should (equal (quote hook) (get (quote org-fragtog-ignore-predicates) (quote custom-type))))
+    (with-temp-buffer
+      (delay-mode-hooks (org-mode))
+      (org-fragtog-mode)
+      (should org-fragtog-mode)
+      (should (memq (quote org-fragtog--post-cmd) post-command-hook))
+      ;; With no fragments around, the hook function must run without error.
+      (org-fragtog--post-cmd)
+      ;; The renewed-disable path takes the &optional RENEW argument, and
+      ;; the plain path relies on its nil default.
+      (org-fragtog--disable-frag nil t)
+      (org-fragtog--disable-frag nil)
+      (should (null org-fragtog--timer))
+      (org-fragtog-mode)
+      (should (null org-fragtog-mode))
+      (should (not (memq (quote org-fragtog--post-cmd) post-command-hook))))))
+
+(provide (quote ruri-test))
 ;;; ruri-test.el ends here

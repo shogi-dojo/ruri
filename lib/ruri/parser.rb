@@ -30,6 +30,7 @@ module Ruri
       @diagnostics = []
       @definitions = []
       @seen_names = {}
+      @seen_variable_names = {}
     end
 
     def parse
@@ -106,6 +107,7 @@ module Ruri
         if opening == "\"" && interpolated_slice?(node)
           return [false, error(node.location, "string interpolation is not supported in v0")]
         end
+
         [true, node.unescaped]
       when Prism::InterpolatedStringNode
         [false, error(node.location,
@@ -126,6 +128,7 @@ module Ruri
         if opening == ":\"" && interpolated_slice?(node)
           return [false, error(node.location, "symbol interpolation is not supported in v0")]
         end
+
         [true, node.unescaped]
       when Prism::InterpolatedSymbolNode
         [false, error(node.location, "symbol interpolation is not supported in v0")]
@@ -169,6 +172,12 @@ module Ruri
       case node.name
       when :command then parse_command_definition(node)
       when :function then parse_function_definition(node)
+      when :variable then parse_variable_definition(node, "variable", "defvar", false)
+      when :constant then parse_variable_definition(node, "constant", "defconst", true)
+      when :custom then parse_custom_definition(node)
+      when :variable_local then parse_variable_definition(node, "variable_local", "defvar-local", false)
+      when :require then parse_feature_form(node, :require)
+      when :provide then parse_feature_form(node, :provide)
       else unsupported(node)
       end
     end
@@ -180,10 +189,6 @@ module Ruri
       end
       if node.block.nil?
         error(node.location, "command requires a do...end block")
-        return
-      end
-      if node.block.parameters
-        error(block_parameters_location(node.block), "command blocks do not take parameters")
         return
       end
 
@@ -198,10 +203,19 @@ module Ruri
       end
       definition_name = parse_definition_name(args[0], :command)
       return unless definition_name
+
       source_name, lisp_name = definition_name
 
-      body = with_local_scope(node.block) { parse_command_body(node.block) }
-      @definitions << Forms::Command.new(source_name: source_name, name: lisp_name, body: body)
+      parameters = parse_block_parameters(node.block, "command")
+      return unless parameters
+
+      body = with_local_scope(node.block, parameters.names) { parse_command_body(node.block) }
+      @definitions << Forms::Command.new(
+        source_name: source_name,
+        name: lisp_name,
+        parameters: generated_parameter_list(parameters),
+        body: body
+      )
     end
 
     def parse_function_definition(node)
@@ -225,14 +239,23 @@ module Ruri
       end
       definition_name = parse_definition_name(args[0], :function)
       return unless definition_name
+
       source_name, lisp_name = definition_name
 
-      parameters = parse_required_block_parameters(node.block, "function")
+      parameters = parse_block_parameters(node.block, "function")
       return unless parameters
-      generated_parameters = parameters.map { |name| generated_local_name(name) }
-      body = with_local_scope(node.block, parameters) do
-        parse_value_body(node.block.body&.body || [])
+
+      generated_parameters = generated_parameter_list(parameters)
+      statements = node.block.body&.body || []
+      docstring = nil
+      if unqualified_call?(statements.first, :doc)
+        docstring = parse_doc_statement(statements.first)
+        statements = statements[1..]
       end
+      body = with_local_scope(node.block, parameters.names) do
+        parse_value_body(statements)
+      end
+      body = [docstring] + body if docstring
       @definitions << Forms::FunctionDefinition.new(
         source_name: source_name,
         name: lisp_name,
@@ -260,6 +283,212 @@ module Ruri
       end
       @seen_names[lisp_name] = kind
       [source_name, lisp_name]
+    end
+
+    # `variable :name [value] ["doc"]` and `constant :name value ["doc"]`
+    # lower to defvar/defconst. Variables and functions live in separate
+    # Elisp namespaces, so names are checked against their own map.
+    def parse_variable_definition(node, kind, lisp_form, value_required)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `#{kind}` with explicit receiver")
+        return
+      end
+      if node.block
+        error(node.location, "#{kind} does not take a block")
+        return
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "#{kind} does not accept keyword arguments")
+        return
+      end
+      min_args = value_required ? 2 : 1
+      unless positional.length.between?(min_args, 3)
+        range = value_required ? "two or three" : "one to three"
+        error(node.location,
+              "#{kind} requires #{range} arguments: :name" \
+              "#{value_required ? '' : ' [, value]'}, and an optional docstring")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid #{kind} name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+      lisp_name = source_name.tr("_", "-")
+      if @seen_variable_names.key?(lisp_name)
+        previous_kind = @seen_variable_names.fetch(lisp_name)
+        error(positional[0].location,
+              "duplicate #{kind} definition `#{lisp_name}`; already defined as #{previous_kind}")
+        return
+      end
+      @seen_variable_names[lisp_name] = kind
+
+      value = nil
+      if positional[1]
+        value = parse_expression(positional[1])
+        return unless value
+      end
+
+      docstring = nil
+      if positional[2]
+        ok, text = extract_string(positional[2])
+        return unless ok
+
+        docstring = text
+      end
+
+      form_class =
+        if value_required
+          Forms::ConstantDefinition
+        elsif lisp_form == "defvar-local"
+          Forms::VariableLocalDefinition
+        else
+          Forms::VariableDefinition
+        end
+      @definitions << form_class.new(
+        source_name: source_name,
+        name: lisp_name,
+        value: value,
+        docstring: docstring
+      )
+    end
+
+    # `custom :name value ["doc"] [key: expression ...]` lowers to
+    # defcustom. Every keyword pair lowers to `:key value` in source
+    # order (`type: :string` emits `:type 'string`), so standard
+    # defcustom keywords such as :group and :options work directly.
+    def parse_custom_definition(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `custom` with explicit receiver")
+        return
+      end
+      if node.block
+        error(node.location, "custom does not take a block")
+        return
+      end
+
+      positional, keywords = split_arguments(node)
+      unless positional.length.between?(2, 3)
+        error(node.location, "custom requires two or three arguments: :name, value, and an optional docstring")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid custom name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+      lisp_name = source_name.tr("_", "-")
+      if @seen_variable_names.key?(lisp_name)
+        previous_kind = @seen_variable_names.fetch(lisp_name)
+        error(positional[0].location,
+              "duplicate custom definition `#{lisp_name}`; already defined as #{previous_kind}")
+        return
+      end
+      @seen_variable_names[lisp_name] = "custom"
+
+      value = parse_expression(positional[1])
+      return unless value
+
+      docstring = nil
+      if positional[2]
+        ok, text = extract_string(positional[2])
+        return unless ok
+
+        docstring = text
+      end
+
+      keyword_pairs = []
+      keywords.each do |key, value_node|
+        unless key.match?(NAME_RE) && key != "t"
+          error(node.location, "invalid custom keyword `#{key}`; must match [a-z][a-z0-9_]*")
+          return
+        end
+        expression = parse_expression(value_node)
+        return unless expression
+
+        keyword_pairs << [key.tr("_", "-"), expression]
+      end
+
+      @definitions << Forms::CustomDefinition.new(
+        source_name: source_name,
+        name: lisp_name,
+        value: value,
+        docstring: docstring,
+        keywords: keyword_pairs
+      )
+    end
+
+    # `require :name` / `provide :name` lower to (require 'name) and
+    # (provide 'name). They are top-level statements only.
+    def parse_feature_form(node, kind)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `#{kind}` with explicit receiver")
+        return
+      end
+      if node.block
+        error(node.location, "#{kind} does not take a block")
+        return
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "#{kind} does not accept keyword arguments")
+        return
+      end
+      unless positional.length == 1
+        error(node.location, "#{kind} requires exactly one literal symbol argument")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid #{kind} name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+
+      @definitions << (kind == :require ? Forms::Require.new(source_name: source_name,
+                                                             name: source_name.tr(
+                                                               "_", "-"
+                                                             )) : Forms::Provide.new(source_name: source_name,
+                                                                                     name: source_name.tr(
+                                                                                       "_", "-"
+                                                                                     )))
+    end
+
+    # Splits a call's arguments into positional nodes and keyword
+    # (name, value) pairs from a trailing `name: value` hash. DSL
+    # definition forms use the keyword pairs sparingly and explicitly.
+    def split_arguments(node)
+      args = node.arguments&.arguments || []
+      keywords = []
+      positional = []
+      args.each do |arg|
+        if arg.is_a?(Prism::KeywordHashNode)
+          arg.elements.each do |element|
+            unless element.is_a?(Prism::AssocNode) && element.key.is_a?(Prism::SymbolNode)
+              error(element.location, "keyword arguments must use symbol keys")
+              next
+            end
+
+            keywords << [element.key.unescaped.to_s, element.value]
+          end
+        else
+          positional << arg
+        end
+      end
+      [positional, keywords]
     end
 
     def literal_symbol_node?(node)
@@ -313,6 +542,7 @@ module Ruri
       forms = []
       interactive_seen = false
       interactive_problem_reported = false
+      docstring_seen = false
       statements.each_with_index do |stmt, index|
         if stmt.is_a?(Prism::LocalVariableWriteNode) ||
            stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
@@ -336,24 +566,28 @@ module Ruri
           next
         end
         case stmt.name
-        when :interactive
-          if index.zero? && !interactive_seen
-            interactive_seen = true
-            if stmt.arguments
-              interactive_problem_reported = true
-              error(stmt.location, "interactive takes no arguments")
-            elsif stmt.block
-              interactive_problem_reported = true
-              error(stmt.location, "interactive does not take a block")
-            else
-              forms << Forms::Interactive.new
+        when :doc
+          if index.zero? && !docstring_seen
+            docstring_seen = true
+            if (form = parse_doc_statement(stmt))
+              forms << form
             end
           else
+            error(stmt.location, "doc is only allowed once, as the first statement of a command or function body")
+          end
+        when :interactive
+          if index <= (docstring_seen ? 1 : 0) && !interactive_seen
+            interactive_seen = true
+            interactive_form = parse_interactive_statement(stmt)
+            forms << interactive_form if interactive_form
+          else
             interactive_problem_reported = true
-            error(stmt.location, "interactive must appear exactly once, as the first statement of the command body")
+            error(stmt.location, "interactive must appear exactly once, directly after the optional docstring")
           end
         when :command
           error(stmt.location, "nested command definitions are not supported")
+        when :variable, :constant, :custom, :variable_local, :require, :provide
+          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
             error(stmt.location, "nested function definitions are not supported")
@@ -366,6 +600,10 @@ module Ruri
           end
         when :insert
           if (form = parse_insert(stmt))
+            forms << form
+          end
+        when :assign
+          if (form = parse_assign_statement(stmt))
             forms << form
           end
         else
@@ -430,6 +668,52 @@ module Ruri
       return nil unless ok
 
       Forms::Insert.new(text: text)
+    end
+
+    # `interactive` and `interactive "P"` lower to `(interactive)` and
+    # `(interactive "P")`. The spec string is read by Emacs at invocation
+    # time and is never evaluated as Ruri, so it is a typed form with a
+    # literal string rather than an ordinary expression argument.
+    def parse_interactive_statement(node)
+      if node.block
+        error(node.location, "interactive does not take a block")
+        return nil
+      end
+      args = node.arguments&.arguments || []
+      if args.length > 1
+        error(node.location, "interactive takes at most one literal string argument")
+        return nil
+      end
+
+      spec = nil
+      if args.one?
+        ok, text = extract_string(args[0])
+        return nil unless ok
+
+        spec = Forms::Literal.new(kind: :string, value: text)
+      end
+      Forms::Interactive.new(spec: spec)
+    end
+
+    # The optional first `doc "..."` statement of a command or function
+    # body. Returns nil when the node is not a doc statement; records a
+    # diagnostic when it is malformed.
+    def parse_doc_statement(node)
+      return nil unless unqualified_call?(node, :doc)
+
+      if node.block
+        error(node.location, "doc does not take a block")
+        return nil
+      end
+      args = node.arguments&.arguments || []
+      if args.length != 1
+        error(node.location, "doc requires exactly one literal string argument")
+        return nil
+      end
+      ok, text = extract_string(args[0])
+      return nil unless ok
+
+      Forms::Docstring.new(text: text)
     end
 
     def parse_structured_statement(node)
@@ -517,9 +801,10 @@ module Ruri
         return nil
       end
 
-      parameters = parse_required_block_parameters(node.block, "each")
+      parameters = parse_block_parameters(node.block, "each")
       return nil unless parameters
-      unless parameters.one?
+
+      unless parameters.required.one? && parameters.optionals.empty? && parameters.rest.nil?
         error(node.block.location, "each requires exactly one block parameter")
         return nil
       end
@@ -529,14 +814,14 @@ module Ruri
 
       previous_names = @local_names
       begin
-        @local_names = ((@local_names || []) + parameters).uniq
+        @local_names = ((@local_names || []) + parameters.names).uniq
         body = parse_buffer_statements(node.block.body&.body || [])
       ensure
         @local_names = previous_names
       end
       Forms::Each.new(
         collection: collection,
-        parameter: generated_local_name(parameters.first),
+        parameter: generated_local_name(parameters.required.first),
         body: body
       )
     end
@@ -612,6 +897,8 @@ module Ruri
         return parse_cons_value(node) if unqualified_call?(node, :cons)
         return parse_quote(node) if unqualified_call?(node, :quote)
         return parse_quasiquote(node) if unqualified_call?(node, :quasiquote)
+        return parse_var_read(node) if unqualified_call?(node, :var)
+        return parse_keyword(node) if unqualified_call?(node, :keyword)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -644,10 +931,114 @@ module Ruri
       )
     end
 
+    # `keyword :begin` emits the Elisp keyword symbol :begin, which is
+    # self-quoting; an ordinary symbol literal would emit (quote begin).
+    def parse_keyword(node)
+      if node.block
+        error(node.location, "keyword does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "keyword does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 1
+        error(node.location, "keyword requires exactly one literal symbol argument")
+        return nil
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+
+      unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+        error(positional[0].location,
+              "invalid keyword `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return nil
+      end
+
+      Forms::Keyword.new(source_name: source_name, name: ":#{source_name.tr("_", "-")}")
+    end
+
     def local_reference_call?(node)
       @local_names&.include?(node.name.to_s) &&
         node.receiver.nil? && node.arguments.nil? && node.block.nil? &&
         node.opening_loc.nil?
+    end
+
+    # `var :name` reads the dynamic value of an Emacs Lisp variable and
+    # lowers to the bare symbol, without the quote a symbol literal gets.
+    def parse_var_read(node)
+      if node.block
+        error(node.location, "var does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "var does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 1
+        error(node.location, "var requires exactly one literal symbol argument")
+        return nil
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+
+      unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+        error(positional[0].location,
+              "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return nil
+      end
+
+      Forms::VarRead.new(source_name: source_name, name: source_name.tr("_", "-"))
+    end
+
+    # `assign :name, value, ...` writes Emacs Lisp variables with setq.
+    # Special-form positions are unevaluated symbols, so this is a typed
+    # form rather than an el.* call. An even number of arguments is
+    # required; every odd position is a literal symbol.
+    def parse_assign_statement(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `assign` with explicit receiver")
+        return nil
+      end
+      if node.block
+        error(node.location, "assign does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "assign does not accept keyword arguments")
+        return nil
+      end
+      if positional.length < 2 || positional.length.odd?
+        error(node.location, "assign requires name/value pairs")
+        return nil
+      end
+
+      pairs = []
+      positional.each_slice(2) do |name_node, value_node|
+        unless literal_symbol_node?(name_node)
+          error(name_node.location,
+                "assign requires literal symbol variable names")
+          return nil
+        end
+        ok, source_name = extract_symbol(name_node)
+        return nil unless ok
+
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(name_node.location,
+                "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        value = parse_expression(value_node)
+        return nil unless value
+
+        pairs << [source_name.tr("_", "-"), value]
+      end
+      Forms::Assign.new(pairs: pairs)
     end
 
     def parse_lambda(node)
@@ -665,45 +1056,88 @@ module Ruri
 
       previous_names = @local_names
       begin
-        @local_names = ((@local_names || []) + parameters).uniq
+        @local_names = ((@local_names || []) + parameters.names).uniq
         body = parse_value_body(node.block.body&.body || [])
       ensure
         @local_names = previous_names
       end
       Forms::Lambda.new(
-        parameters: parameters.map { |name| generated_local_name(name) },
+        parameters: generated_parameter_list(parameters),
         body: body
       )
     end
 
     def parse_lambda_parameters(block)
-      parse_required_block_parameters(block, "fn")
+      parse_block_parameters(block, "fn")
     end
 
-    def parse_required_block_parameters(block, construct)
+    # Parses block parameters into a ParameterList keyed by source names:
+    # required positionals, optionals carrying parsed default expressions,
+    # and an optional trailing rest. Keyword, block, destructured, and
+    # post-rest parameters remain unsupported.
+    def parse_block_parameters(block, construct)
       block_parameters = block.parameters
-      return [] unless block_parameters
+      return Forms::ParameterList.new(required: [], optionals: [], rest: nil) unless block_parameters
 
       parameters = block_parameters.parameters
-      required = parameters&.requireds || []
       unsupported_shape =
         block_parameters.locals.any? || parameters.nil? ||
-        parameters.optionals.any? || parameters.rest || parameters.posts.any? ||
-        parameters.keywords.any? || parameters.keyword_rest || parameters.block
-      if unsupported_shape || required.any? { |parameter| !parameter.is_a?(Prism::RequiredParameterNode) }
+        parameters.posts.any? || parameters.keywords.any? ||
+        parameters.keyword_rest || parameters.block ||
+        parameters.requireds.any? { |parameter| !parameter.is_a?(Prism::RequiredParameterNode) }
+      if unsupported_shape
         error(block_parameters.location,
-              "#{construct} supports only required positional block parameters")
+              "#{construct} supports only required, optional, and rest positional block parameters")
         return nil
       end
 
-      names = required.map { |parameter| parameter.name.to_s }
-      invalid = names.find { |name| !name.match?(NAME_RE) || name == "t" }
+      required = parameters.requireds.map { |parameter| parameter.name.to_s }
+      optional_nodes = parameters.optionals
+      rest_node = parameters.rest
+      parameter_nodes = parameters.requireds + optional_nodes + (rest_node ? [rest_node] : [])
+      invalid = parameter_nodes.find do |parameter|
+        name = parameter.name.to_s
+        !name.match?(NAME_RE) || name == "t"
+      end
       if invalid
-        parameter = required[names.index(invalid)]
-        error(parameter.location, "invalid #{construct} parameter name `#{invalid}`")
+        error(invalid.location, "invalid #{construct} parameter name `#{invalid.name}`")
         return nil
       end
-      names
+
+      names = required + optional_nodes.map { |parameter| parameter.name.to_s }
+      names << rest_node.name.to_s if rest_node
+
+      # Defaults run at invocation entry with every parameter already bound,
+      # so they may reference any parameter regardless of position.
+      previous_names = @local_names
+      begin
+        @local_names = ((@local_names || []) + names).uniq
+        defaults = optional_nodes.map { |parameter| parse_expression(parameter.value) }
+      ensure
+        @local_names = previous_names
+      end
+      return nil if defaults.any?(&:nil?)
+
+      optionals = optional_nodes.zip(defaults).map do |parameter, default|
+        Forms::OptionalParameter.new(name: parameter.name.to_s, default: default)
+      end
+      rest = rest_node && Forms::RestParameter.new(name: rest_node.name.to_s)
+      Forms::ParameterList.new(required: required, optionals: optionals, rest: rest)
+    end
+
+    # Converts a source-name ParameterList into the hygienic form stored on
+    # definitions; default expressions were parsed with parameters in scope
+    # and already carry hygienic local references.
+    def generated_parameter_list(parameters)
+      Forms::ParameterList.new(
+        required: parameters.required.map { |name| generated_local_name(name) },
+        optionals: parameters.optionals.map do |optional|
+          Forms::OptionalParameter.new(name: generated_local_name(optional.name),
+                                       default: optional.default)
+        end,
+        rest: parameters.rest &&
+              Forms::RestParameter.new(name: generated_local_name(parameters.rest.name))
+      )
     end
 
     def operator_call?(node)
@@ -781,14 +1215,14 @@ module Ruri
     end
 
     def parse_list_value(node)
-      return nil unless reject_expression_block(node, "list")
+      return nil unless block_absent?(node, "list")
 
       elements = (node.arguments&.arguments || []).map { |item| parse_expression(item) }
       elements.any?(&:nil?) ? nil : Forms::ListValue.new(elements: elements)
     end
 
     def parse_cons_value(node)
-      return nil unless reject_expression_block(node, "cons")
+      return nil unless block_absent?(node, "cons")
 
       arguments = node.arguments&.arguments || []
       unless arguments.length == 2
@@ -802,7 +1236,7 @@ module Ruri
     end
 
     def parse_quote(node)
-      return nil unless reject_expression_block(node, "quote")
+      return nil unless block_absent?(node, "quote")
 
       argument = single_expression_argument(node, "quote")
       return nil unless argument
@@ -812,7 +1246,7 @@ module Ruri
     end
 
     def parse_quasiquote(node)
-      return nil unless reject_expression_block(node, "quasiquote")
+      return nil unless block_absent?(node, "quasiquote")
 
       argument = single_expression_argument(node, "quasiquote")
       return nil unless argument
@@ -821,7 +1255,7 @@ module Ruri
       value ? Forms::QuasiQuote.new(value: value) : nil
     end
 
-    def reject_expression_block(node, name)
+    def block_absent?(node, name)
       return true unless node.block
 
       error(node.location, "#{name} does not take a block")
@@ -857,6 +1291,7 @@ module Ruri
         if quasiquote && unqualified_call?(node, :unquote)
           return parse_template_escape(node, splice: false)
         end
+
         if quasiquote && unqualified_call?(node, :splice)
           unless allow_splice
             return error(node.location,
@@ -874,7 +1309,7 @@ module Ruri
     end
 
     def parse_quoted_list(node, quasiquote:)
-      return nil unless reject_expression_block(node, "list")
+      return nil unless block_absent?(node, "list")
 
       elements = (node.arguments&.arguments || []).map do |element|
         parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
@@ -883,7 +1318,7 @@ module Ruri
     end
 
     def parse_quoted_cons(node, quasiquote:)
-      return nil unless reject_expression_block(node, "cons")
+      return nil unless block_absent?(node, "cons")
 
       arguments = node.arguments&.arguments || []
       unless arguments.length == 2
@@ -898,7 +1333,7 @@ module Ruri
     end
 
     def parse_template_escape(node, splice:)
-      return nil unless reject_expression_block(node, node.name)
+      return nil unless block_absent?(node, node.name)
 
       argument = single_expression_argument(node, node.name)
       return nil unless argument
@@ -958,7 +1393,7 @@ module Ruri
       return true unless node.is_a?(Prism::CallNode)
       return false if node.name == :each && node.receiver
       return false if node.receiver.nil? &&
-                      %i[interactive command with_current_buffer insert].include?(node.name)
+                      %i[interactive command with_current_buffer insert doc assign].include?(node.name)
       return false if node.receiver.nil? && node.name == :function && node.block
 
       true
@@ -989,10 +1424,14 @@ module Ruri
           next
         end
         case stmt.name
+        when :doc
+          error(stmt.location, "doc is only allowed once, as the first statement of a command or function body")
         when :interactive
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
         when :command
           error(stmt.location, "nested command definitions are not supported")
+        when :variable, :constant, :custom, :variable_local, :require, :provide
+          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
             error(stmt.location, "nested function definitions are not supported")
@@ -1005,6 +1444,10 @@ module Ruri
           end
         when :insert
           if (form = parse_insert(stmt))
+            forms << form
+          end
+        when :assign
+          if (form = parse_assign_statement(stmt))
             forms << form
           end
         else

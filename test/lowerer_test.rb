@@ -30,7 +30,12 @@ class LowererTest < Minitest::Test
 
   def test_rejects_unknown_language_forms
     unknown = Data.define.new
-    command = Ruri::Forms::Command.new(source_name: "bad", name: "bad", body: [unknown])
+    command = Ruri::Forms::Command.new(
+      source_name: "bad",
+      name: "bad",
+      parameters: Ruri::Forms::ParameterList.new(required: [], optionals: [], rest: nil),
+      body: [unknown]
+    )
 
     error = assert_raises(ArgumentError) { Ruri::Lowerer.lower([command]) }
 
@@ -254,5 +259,88 @@ class LowererTest < Minitest::Test
     assert_equal "let", scope.items.first.name
     assert_equal ["ruri--local-prefix"], scope.items[1].items.map(&:name)
     assert_equal "concat", scope.items.last.items.first.name
+  end
+
+  def test_lowers_docstring_outside_the_locals_let
+    command = parse(<<~RURI).first
+      command :greet_cmd do
+        doc "Greet the world."
+        interactive
+        message = "hi"
+        el.message(message)
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([command]).first
+    assert_instance_of Ruri::Elisp::Docstring, form.items[3]
+    assert_equal "Greet the world.", form.items[3].value.value
+    assert_equal "interactive", form.items[4].items.first.name
+    scope = form.items[5]
+    assert_equal "let", scope.items.first.name
+    assert_equal ["ruri--local-message"], scope.items[1].items.map(&:name)
+  end
+
+  def test_lowers_function_docstring_outside_the_locals_let
+    function = parse(<<~RURI).first
+      function :double_it do |number|
+        doc "Double NUMBER."
+        result = number * 2
+        result
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    assert_instance_of Ruri::Elisp::Docstring, form.items[3]
+    scope = form.items[4]
+    assert_equal "let", scope.items.first.name
+  end
+
+  def test_lowers_optional_and_rest_parameters
+    function = parse(<<~RURI).first
+      function :greet do |name, punctuation = "!", *extra|
+        el.message(name)
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    assert_equal ["ruri--local-name", "&optional", "ruri--local-punctuation",
+                  "&rest", "ruri--local-extra"],
+                 form.items[2].items.map(&:name)
+    default = form.items[3]
+    assert_equal "unless", default.items.first.name
+    assert_equal "ruri--local-punctuation", default.items[1].name
+    assert_equal "setq", default.items[2].items.first.name
+    assert_equal "ruri--local-punctuation", default.items[2].items[1].name
+    assert_equal "!", default.items[2].items[2].value
+  end
+
+  def test_nil_optional_default_emits_no_entry_code
+    function = parse(<<~RURI).first
+      function :zoom do |size, factor = nil|
+        el.message("%S", size)
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    assert_equal ["ruri--local-size", "&optional", "ruri--local-factor"],
+                 form.items[2].items.map(&:name)
+    assert_equal "message", form.items[3].items.first.name
+  end
+
+  def test_lowers_lambda_optional_parameters_inside_the_lambda_body
+    lambda_form = parse(<<~RURI).first
+      function :make do
+        fn do |value, factor = 2|
+          el.identity(value)
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([lambda_form]).first
+    lambda_node = lowered.items[3]
+    assert_equal "lambda", lambda_node.items.first.name
+    assert_equal ["ruri--local-value", "&optional", "ruri--local-factor"],
+                 lambda_node.items[1].items.map(&:name)
+    assert_equal "unless", lambda_node.items[2].items.first.name
   end
 end

@@ -1,0 +1,66 @@
+# Ruri lints for structural correctness, not house style.
+#
+# The suite already pins behavior; RuboCop's job here is to catch the
+# defects tests cannot see — broken indentation, duplicate method
+# definitions that silently override each other, and unreachable or
+# ambiguous code. Style and Metrics departments are therefore disabled:
+# a compiler legitimately contains long dispatch methods, and failing
+# the build over quoting style trains contributors to ignore the linter.
+
+AllCops:
+  TargetRubyVersion: 3.1
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - "vendor/**/*"
+    - "graphify-out/**/*"
+    - "test/fixtures/**/*"
+
+# Off by default: opinion, not correctness.
+Style:
+  Enabled: false
+Metrics:
+  Enabled: false
+
+# Layout is the point: this is what catches mangled indentation.
+Layout:
+  Enabled: true
+
+Layout/LineLength:
+  Max: 120
+
+Lint:
+  Enabled: true
+
+# `:true` and `:false` are Ruri literal-kind tags that lower to the Elisp
+# symbols `t` and `nil`. They are data about the target language, not
+# Ruby booleans.
+Lint/BooleanSymbol:
+  Enabled: false
+
+# SourceScan tests must observe the raw characters `#{...}` inside single
+# quotes; interpolating them would defeat the test.
+Lint/InterpolationCheck:
+  Exclude:
+    - "test/source_scan_test.rb"
+
+# Parser helpers intentionally `return nil` from inside `each_slice` to
+# abort a whole form on the first invalid element.
+Lint/NonLocalExitFromIterator:
+  Exclude:
+    - "lib/ruri/parser.rb"
+
+# The lowerer and printer dispatch on distinct typed form classes that
+# can legitimately share a lowering (e.g. LocalRead, VarRead and Keyword
+# all emit a bare symbol). Collapsing those branches would hide the
+# dispatch that makes the pipeline readable.
+Lint/DuplicateBranch:
+  Exclude:
+    - "lib/ruri/lowerer.rb"
+    - "lib/ruri/printer.rb"
+
+# `.sort` after Dir.glob is redundant on modern Ruby but states the
+# determinism this test is actually asserting.
+Lint/RedundantDirGlobSort:
+  Exclude:
+    - "test/cli_test.rb"

@@ -92,7 +92,8 @@ class EmitterTest < Minitest::Test
     forms = [Ruri::Forms::Command.new(
       source_name: "octal_cmd",
       name: "octal-cmd",
-      body: [Ruri::Forms::Interactive.new, Ruri::Forms::Insert.new(text: text)]
+      parameters: Ruri::Forms::ParameterList.new(required: [], optionals: [], rest: nil),
+      body: [Ruri::Forms::Interactive.new(spec: nil), Ruri::Forms::Insert.new(text: text)]
     )]
 
     output = Ruri::Emitter.emit(forms, source_path: "test.ruri")
@@ -132,8 +133,8 @@ class EmitterTest < Minitest::Test
     output = Ruri.compile(HELLO_SOURCE, path: path)
 
     assert_includes output, "from safe.ruri\\n(error \"injected\")\\t. DO NOT EDIT."
-    assert_equal 1, output.lines.count { |line| line.include?("injected") }
-    refute output.lines.any? { |line| line.start_with?("(error") }
+    assert_equal(1, output.lines.count { |line| line.include?("injected") })
+    refute(output.lines.any? { |line| line.start_with?("(error") })
   end
 
   def test_emits_generic_elisp_calls_and_literals
@@ -281,5 +282,69 @@ class EmitterTest < Minitest::Test
     assert_includes output, "(defun decorate (ruri--local-value)"
     assert_includes output, "(let (ruri--local-prefix)"
     assert_includes output, '(concat ruri--local-prefix ruri--local-value ">")'
+  end
+
+  def test_docstring_renders_on_its_own_line
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :greet_cmd do
+        doc "Greet the world."
+        interactive
+        insert("hi")
+      end
+    RURI
+
+    assert_includes output, <<~ELISP
+      (defun greet-cmd ()
+        "Greet the world."
+        (interactive)
+        (insert "hi"))
+    ELISP
+  end
+
+  def test_emits_optional_and_rest_parameters
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :greet do |name, punctuation = "!", *extra|
+        doc "Greet NAME with PUNCTUATION."
+        el.message("%s%s", name, punctuation)
+      end
+    RURI
+
+    assert_includes output, <<~'ELISP'
+      (defun greet (ruri--local-name &optional ruri--local-punctuation &rest ruri--local-extra)
+        "Greet NAME with PUNCTUATION."
+        (unless ruri--local-punctuation
+          (setq ruri--local-punctuation "!"))
+    ELISP
+  end
+
+  def test_emits_lambda_optional_parameters
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :scale_cmd do
+        interactive
+        scale = fn do |value, factor = 2|
+          el.identity(value)
+        end
+        el.identity(scale)
+      end
+    RURI
+
+    assert_includes output, "(lambda (ruri--local-value &optional ruri--local-factor)"
+    assert_includes output, "(unless ruri--local-factor\n          (setq ruri--local-factor 2))"
+  end
+
+  def test_emits_command_parameters_and_interactive_spec
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :jump_cmd do |location, raw_prefix = nil|
+        doc "Jump to LOCATION, honoring the raw prefix argument."
+        interactive "P"
+        el.message("%s %s", location, raw_prefix)
+      end
+    RURI
+
+    assert_includes output, <<~'ELISP'
+      (defun jump-cmd (ruri--local-location &optional ruri--local-raw-prefix)
+        "Jump to LOCATION, honoring the raw prefix argument."
+        (interactive "P")
+    ELISP
   end
 end
