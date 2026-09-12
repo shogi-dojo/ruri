@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+
+      - name: Install Emacs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends emacs-nox
+
+      - name: Ruby compiler tests
+        run: bundle exec ruby -Itest test/compiler_test.rb
+
+      - name: Compile example
+        run: bundle exec ruby bin/ruri compile examples/hello.ruri --output examples/hello.el
+
+      - name: Generated output is deterministic
+        run: git diff --exit-code examples/hello.el
+
+      - name: ERT integration tests
+        run: emacs -Q --batch -L lisp -l test/ruri-test.el -f ert-run-tests-batch-and-exit
+
+      - name: Byte-compile generated output
+        run: |
+          emacs -Q --batch -f batch-byte-compile examples/hello.el
+          emacs -Q --batch -f batch-byte-compile lisp/ruri.el
