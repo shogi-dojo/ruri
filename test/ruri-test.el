@@ -323,6 +323,36 @@
                    (documentation (quote ruri-test-greet-cmd))))
     (should (equal "Double N." (documentation (quote ruri-test-double))))))
 
+(ert-deftest ruri-test/optional-and-rest-parameters-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri params " t))
+         (source (expand-file-name "params.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_greet do |name, punctuation = \"!\"|\n"
+              "  doc \"Greet NAME with PUNCTUATION.\"\n"
+              "  el.concat(name, punctuation)\n"
+              "end\n\n"
+              "function :ruri_test_fallback do |value, fallback = \"d\"|\n"
+              "  doc \"Return VALUE, or FALLBACK when VALUE is nil.\"\n"
+              "  if value\n"
+              "    value\n"
+              "  else\n"
+              "    fallback\n"
+              "  end\n"
+              "end\n\n"
+              "function :ruri_test_count do |first, *more|\n"
+              "  doc \"Describe FIRST and the rest.\"\n"
+              "  el.concat(first, el.format(\"/%d\", el.length(more)))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (equal "hi!" (ruri-test-greet "hi")))
+    (should (equal "hi?" (ruri-test-greet "hi" "?")))
+    ;; An entry-time default re-applies when nil is passed explicitly;
+    ;; this documents the plain-defun nil-collision semantics.
+    (should (equal "d" (ruri-test-fallback nil)))
+    (should (equal "v" (ruri-test-fallback "v")))
+    (should (equal "a/2" (ruri-test-count "a" "b" "c")))
+    (should (equal "a/0" (ruri-test-count "a")))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

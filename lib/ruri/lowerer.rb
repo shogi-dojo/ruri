@@ -48,16 +48,54 @@ module Ruri
     def lower_function_definition(function)
       doc_form, statements = partition_docstring(function.body)
       lowered = statements.map { |statement| lower_statement(statement) }
-      locals = collect_locals(statements, [], function.parameters)
+      locals = collect_locals(statements, [], function.parameters.names)
       lowered = wrap_locals(locals, lowered) unless locals.empty?
+      lowered = lower_parameter_defaults(function.parameters) + lowered
 
       Elisp.list(
         Elisp.symbol("defun"),
         Elisp.symbol(function.name),
-        Elisp.inline_list(*function.parameters.map { |name| Elisp.symbol(name) }),
+        lower_parameter_list(function.parameters),
         *doc_form,
         *lowered
       )
+    end
+
+    # The defun argument list: required names, then `&optional` and `&rest`
+    # sections in binding order.
+    def lower_parameter_list(parameters)
+      items = parameters.required.map { |name| Elisp.symbol(name) }
+      unless parameters.optionals.empty?
+        items << Elisp.symbol("&optional")
+        parameters.optionals.each { |optional| items << Elisp.symbol(optional.name) }
+      end
+      if parameters.rest
+        items << Elisp.symbol("&rest")
+        items << Elisp.symbol(parameters.rest.name)
+      end
+      Elisp.inline_list(*items)
+    end
+
+    # Optional parameters with an expression default are applied at entry
+    # with `(unless name (setq name default))`, because plain defun
+    # arguments have no per-argument default form. A literal nil or false
+    # default lowers to nil, which is exactly Elisp's own behavior, so it
+    # needs no code.
+    def lower_parameter_defaults(parameters)
+      parameters.optionals.filter_map do |optional|
+        next nil if nil_default?(optional.default)
+
+        name = Elisp.symbol(optional.name)
+        Elisp.list(
+          Elisp.symbol("unless"),
+          name,
+          Elisp.list(Elisp.symbol("setq"), name, lower_expression(optional.default))
+        )
+      end
+    end
+
+    def nil_default?(default)
+      default.is_a?(Forms::Literal) && %i[nil false].include?(default.kind)
     end
 
     # The parser places at most one Forms::Docstring at the head of a
@@ -165,7 +203,7 @@ module Ruri
         collect_expression_locals(expression.car, names, shadowed)
         collect_expression_locals(expression.cdr, names, shadowed)
       when Forms::Lambda
-        collect_locals(expression.body, names, shadowed + expression.parameters)
+        collect_locals(expression.body, names, shadowed + expression.parameters.names)
       when Forms::QuasiQuote
         collect_template_locals(expression.value, names, shadowed)
       when Forms::Operation
@@ -276,7 +314,8 @@ module Ruri
       when Forms::Lambda
         Elisp.list(
           Elisp.symbol("lambda"),
-          Elisp.inline_list(*expression.parameters.map { |name| Elisp.symbol(name) }),
+          lower_parameter_list(expression.parameters),
+          *lower_parameter_defaults(expression.parameters),
           *expression.body.map { |statement| lower_statement(statement) }
         )
       when Forms::FunctionReference

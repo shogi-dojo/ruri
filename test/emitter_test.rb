@@ -299,4 +299,35 @@ class EmitterTest < Minitest::Test
         (insert "hi"))
     ELISP
   end
+
+  def test_emits_optional_and_rest_parameters
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :greet do |name, punctuation = "!", *extra|
+        doc "Greet NAME with PUNCTUATION."
+        el.message("%s%s", name, punctuation)
+      end
+    RURI
+
+    assert_includes output, <<~'ELISP'
+      (defun greet (ruri--local-name &optional ruri--local-punctuation &rest ruri--local-extra)
+        "Greet NAME with PUNCTUATION."
+        (unless ruri--local-punctuation
+          (setq ruri--local-punctuation "!"))
+    ELISP
+  end
+
+  def test_emits_lambda_optional_parameters
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :scale_cmd do
+        interactive
+        scale = fn do |value, factor = 2|
+          el.identity(value)
+        end
+        el.identity(scale)
+      end
+    RURI
+
+    assert_includes output, "(lambda (ruri--local-value &optional ruri--local-factor)"
+    assert_includes output, "(unless ruri--local-factor\n          (setq ruri--local-factor 2))"
+  end
 end

@@ -238,17 +238,17 @@ module Ruri
 
       source_name, lisp_name = definition_name
 
-      parameters = parse_required_block_parameters(node.block, "function")
+      parameters = parse_block_parameters(node.block, "function")
       return unless parameters
 
-      generated_parameters = parameters.map { |name| generated_local_name(name) }
+      generated_parameters = generated_parameter_list(parameters)
       statements = node.block.body&.body || []
       docstring = nil
       if unqualified_call?(statements.first, :doc)
         docstring = parse_doc_statement(statements.first)
         statements = statements[1..]
       end
-      body = with_local_scope(node.block, parameters) do
+      body = with_local_scope(node.block, parameters.names) do
         parse_value_body(statements)
       end
       body = [docstring] + body if docstring
@@ -779,10 +779,10 @@ module Ruri
         return nil
       end
 
-      parameters = parse_required_block_parameters(node.block, "each")
+      parameters = parse_block_parameters(node.block, "each")
       return nil unless parameters
 
-      unless parameters.one?
+      unless parameters.required.one? && parameters.optionals.empty? && parameters.rest.nil?
         error(node.block.location, "each requires exactly one block parameter")
         return nil
       end
@@ -792,14 +792,14 @@ module Ruri
 
       previous_names = @local_names
       begin
-        @local_names = ((@local_names || []) + parameters).uniq
+        @local_names = ((@local_names || []) + parameters.names).uniq
         body = parse_buffer_statements(node.block.body&.body || [])
       ensure
         @local_names = previous_names
       end
       Forms::Each.new(
         collection: collection,
-        parameter: generated_local_name(parameters.first),
+        parameter: generated_local_name(parameters.required.first),
         body: body
       )
     end
@@ -1034,45 +1034,88 @@ module Ruri
 
       previous_names = @local_names
       begin
-        @local_names = ((@local_names || []) + parameters).uniq
+        @local_names = ((@local_names || []) + parameters.names).uniq
         body = parse_value_body(node.block.body&.body || [])
       ensure
         @local_names = previous_names
       end
       Forms::Lambda.new(
-        parameters: parameters.map { |name| generated_local_name(name) },
+        parameters: generated_parameter_list(parameters),
         body: body
       )
     end
 
     def parse_lambda_parameters(block)
-      parse_required_block_parameters(block, "fn")
+      parse_block_parameters(block, "fn")
     end
 
-    def parse_required_block_parameters(block, construct)
+    # Parses block parameters into a ParameterList keyed by source names:
+    # required positionals, optionals carrying parsed default expressions,
+    # and an optional trailing rest. Keyword, block, destructured, and
+    # post-rest parameters remain unsupported.
+    def parse_block_parameters(block, construct)
       block_parameters = block.parameters
-      return [] unless block_parameters
+      return Forms::ParameterList.new(required: [], optionals: [], rest: nil) unless block_parameters
 
       parameters = block_parameters.parameters
-      required = parameters&.requireds || []
       unsupported_shape =
         block_parameters.locals.any? || parameters.nil? ||
-        parameters.optionals.any? || parameters.rest || parameters.posts.any? ||
-        parameters.keywords.any? || parameters.keyword_rest || parameters.block
-      if unsupported_shape || required.any? { |parameter| !parameter.is_a?(Prism::RequiredParameterNode) }
+        parameters.posts.any? || parameters.keywords.any? ||
+        parameters.keyword_rest || parameters.block ||
+        parameters.requireds.any? { |parameter| !parameter.is_a?(Prism::RequiredParameterNode) }
+      if unsupported_shape
         error(block_parameters.location,
-              "#{construct} supports only required positional block parameters")
+              "#{construct} supports only required, optional, and rest positional block parameters")
         return nil
       end
 
-      names = required.map { |parameter| parameter.name.to_s }
-      invalid = names.find { |name| !name.match?(NAME_RE) || name == "t" }
+      required = parameters.requireds.map { |parameter| parameter.name.to_s }
+      optional_nodes = parameters.optionals
+      rest_node = parameters.rest
+      parameter_nodes = parameters.requireds + optional_nodes + (rest_node ? [rest_node] : [])
+      invalid = parameter_nodes.find do |parameter|
+        name = parameter.name.to_s
+        !name.match?(NAME_RE) || name == "t"
+      end
       if invalid
-        parameter = required[names.index(invalid)]
-        error(parameter.location, "invalid #{construct} parameter name `#{invalid}`")
+        error(invalid.location, "invalid #{construct} parameter name `#{invalid.name}`")
         return nil
       end
-      names
+
+      names = required + optional_nodes.map { |parameter| parameter.name.to_s }
+      names << rest_node.name.to_s if rest_node
+
+      # Defaults run at invocation entry with every parameter already bound,
+      # so they may reference any parameter regardless of position.
+      previous_names = @local_names
+      begin
+        @local_names = ((@local_names || []) + names).uniq
+        defaults = optional_nodes.map { |parameter| parse_expression(parameter.value) }
+      ensure
+        @local_names = previous_names
+      end
+      return nil if defaults.any?(&:nil?)
+
+      optionals = optional_nodes.zip(defaults).map do |parameter, default|
+        Forms::OptionalParameter.new(name: parameter.name.to_s, default: default)
+      end
+      rest = rest_node && Forms::RestParameter.new(name: rest_node.name.to_s)
+      Forms::ParameterList.new(required: required, optionals: optionals, rest: rest)
+    end
+
+    # Converts a source-name ParameterList into the hygienic form stored on
+    # definitions; default expressions were parsed with parameters in scope
+    # and already carry hygienic local references.
+    def generated_parameter_list(parameters)
+      Forms::ParameterList.new(
+        required: parameters.required.map { |name| generated_local_name(name) },
+        optionals: parameters.optionals.map do |optional|
+          Forms::OptionalParameter.new(name: generated_local_name(optional.name),
+                                       default: optional.default)
+        end,
+        rest: parameters.rest &&
+              Forms::RestParameter.new(name: generated_local_name(parameters.rest.name))
+      )
     end
 
     def operator_call?(node)

@@ -61,7 +61,7 @@ class ParserTest < Minitest::Test
     factorial, decorate = definitions
     assert_instance_of Ruri::Forms::FunctionDefinition, factorial
     assert_equal "factorial", factorial.name
-    assert_equal ["ruri--local-number"], factorial.parameters
+    assert_equal ["ruri--local-number"], factorial.parameters.names
     conditional = factorial.body.first
     assert_instance_of Ruri::Forms::Conditional, conditional
     assert_instance_of Ruri::Forms::ExpressionStatement,
@@ -70,7 +70,7 @@ class ParserTest < Minitest::Test
                        conditional.else_body.first.expression
 
     assert_instance_of Ruri::Forms::FunctionDefinition, decorate
-    assert_equal ["ruri--local-value"], decorate.parameters
+    assert_equal ["ruri--local-value"], decorate.parameters.names
     assert_instance_of Ruri::Forms::LocalWrite, decorate.body.first
     assert_instance_of Ruri::Forms::Call, decorate.body.last
   end
@@ -102,15 +102,76 @@ class ParserTest < Minitest::Test
     assert_equal 5, diag.line
   end
 
-  def test_rejects_optional_function_parameters
+  def test_rejects_keyword_function_parameters
     diag = single_diagnostic(<<~RURI)
-      function :optional do |value = nil|
+      function :keyworded do |value, scale: 1|
         value
       end
     RURI
 
-    assert_match(/function supports only required positional block parameters/, diag.message)
+    assert_match(/function supports only required, optional, and rest positional block parameters/, diag.message)
     assert_equal 1, diag.line
+  end
+
+  def test_rejects_post_rest_function_parameters
+    diag = single_diagnostic(<<~RURI)
+      function :posted do |first, *rest, last|
+        first
+      end
+    RURI
+
+    assert_match(/function supports only required, optional, and rest positional block parameters/, diag.message)
+    assert_equal 1, diag.line
+  end
+
+  def test_rejects_block_function_parameters
+    diag = single_diagnostic(<<~RURI)
+      function :blocked do |value, &callback|
+        value
+      end
+    RURI
+
+    assert_match(/function supports only required, optional, and rest positional block parameters/, diag.message)
+    assert_equal 1, diag.line
+  end
+
+  def test_parses_optional_and_rest_function_parameters
+    function = parse(<<~RURI).first
+      function :greet do |name, punctuation = "!", *extra|
+        el.message(name, punctuation, extra)
+      end
+    RURI
+
+    parameters = function.parameters
+    assert_equal ["ruri--local-name"], parameters.required
+    assert_equal 1, parameters.optionals.length
+    assert_equal "ruri--local-punctuation", parameters.optionals.first.name
+    assert_equal "!", parameters.optionals.first.default.value
+    assert_equal "ruri--local-extra", parameters.rest.name
+    assert_equal %w[ruri--local-name ruri--local-punctuation ruri--local-extra],
+                 parameters.names
+  end
+
+  def test_parses_optional_default_referencing_a_parameter
+    function = parse(<<~RURI).first
+      function :scale do |width, fallback = width|
+        el.message("%S", fallback)
+      end
+    RURI
+
+    default = function.parameters.optionals.first.default
+    assert_instance_of Ruri::Forms::LocalRead, default
+    assert_equal "ruri--local-width", default.name
+  end
+
+  def test_rejects_optional_default_of_a_bare_call
+    diag = single_diagnostic(<<~RURI)
+      function :broken do |width, fallback = unknown|
+        el.message("%S", fallback)
+      end
+    RURI
+
+    assert_match(/unsupported expression: use a Ruri expression or an el\.\* call/, diag.message)
   end
 
   def test_rejects_interactive_inside_function
@@ -237,7 +298,7 @@ class ParserTest < Minitest::Test
 
     lambda = command.body[2].value
     assert_instance_of Ruri::Forms::Lambda, lambda
-    assert_equal %w[ruri--local-value ruri--local-index], lambda.parameters
+    assert_equal %w[ruri--local-value ruri--local-index], lambda.parameters.names
     assert_equal "ruri--local-prefix", lambda.body.first.arguments[1].name
     assert_equal "ruri--local-value", lambda.body.first.arguments[2].name
 
@@ -335,13 +396,13 @@ class ParserTest < Minitest::Test
     diag = single_diagnostic(<<~RURI)
       command :callbacks do
         interactive
-        callback = fn do |value = nil|
+        callback = fn do |value = nil, key: 1|
           el.identity(value)
         end
       end
     RURI
 
-    assert_match(/fn supports only required positional block parameters/, diag.message)
+    assert_match(/fn supports only required, optional, and rest positional block parameters/, diag.message)
     assert_equal 3, diag.line
   end
 
