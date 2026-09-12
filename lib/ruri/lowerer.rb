@@ -635,41 +635,41 @@ module Ruri
     end
 
     def lower_each(each_form)
-      break_tag, next_tag = enter_loop_scopes(each_form.body)
-      lambda_body = each_form.body.map { |statement| lower_statement(statement) }
-      leave_loop_scopes(break_tag, next_tag)
-      lambda_body = [catch_wrap(next_tag, lambda_body)] if next_tag
-      lambda_form = Elisp.list(
-        Elisp.symbol("lambda"),
-        Elisp.inline_list(Elisp.symbol(each_form.parameter)),
-        *lambda_body
-      )
-      mapc_form = Elisp.list(
-        Elisp.symbol("mapc"),
-        lambda_form,
-        lower_expression(each_form.collection)
-      )
-      mapc_form = catch_wrap(break_tag, [mapc_form]) if break_tag
-      mapc_form
+      lower_block_iteration(each_form) do |lambda_form|
+        Elisp.list(
+          Elisp.symbol("mapc"),
+          lambda_form,
+          lower_expression(each_form.collection)
+        )
+      end
     end
 
     def lower_iteration(iteration)
-      break_tag, next_tag = enter_loop_scopes(iteration.body)
-      lambda_body = iteration.body.map { |statement| lower_statement(statement) }
+      lower_block_iteration(iteration) do |lambda_form|
+        Elisp.list(
+          Elisp.symbol(ITERATION_CALLS.fetch(iteration.name)),
+          lambda_form,
+          lower_expression(iteration.collection)
+        )
+      end
+    end
+
+    # Shared lowering for `.each` and the iteration forms: enters the loop
+    # tag scopes, lowers the block body into a lambda (catching `next` per
+    # invocation when the body uses it), yields the lambda to build the
+    # call, and wraps the call in the break catch when the body uses it.
+    def lower_block_iteration(form)
+      break_tag, next_tag = enter_loop_scopes(form.body)
+      lambda_body = form.body.map { |statement| lower_statement(statement) }
       leave_loop_scopes(break_tag, next_tag)
       lambda_body = [catch_wrap(next_tag, lambda_body)] if next_tag
       lambda_form = Elisp.list(
         Elisp.symbol("lambda"),
-        Elisp.inline_list(Elisp.symbol(iteration.parameter)),
+        Elisp.inline_list(Elisp.symbol(form.parameter)),
         *lambda_body
       )
-      call_form = Elisp.list(
-        Elisp.symbol(ITERATION_CALLS.fetch(iteration.name)),
-        lambda_form,
-        lower_expression(iteration.collection)
-      )
-      call_form = catch_wrap(break_tag, [call_form]) if break_tag
-      call_form
+      call_form = yield lambda_form
+      break_tag ? catch_wrap(break_tag, [call_form]) : call_form
     end
 
     def enter_loop_scopes(body)
