@@ -380,28 +380,4 @@ class PackageFormsTest < Minitest::Test
     assert_equal 1, diags.size
     assert_match(/invalid variable name `nil`/, diags.first.message)
   end
-
-  def test_rejects_var_reads_with_wrong_arguments
-    diags = diagnostics_of(<<~RURI)
-      command :a do
-        interactive
-        el.message("%S", var())
-      end
-    RURI
-
-    assert_equal 1, diags.size
-    assert_match(/var requires exactly one literal symbol argument/, diags.first.message)
-  end
-
-  def test_rejects_var_reads_of_reserved_names
-    diags = diagnostics_of(<<~RURI)
-      command :a do
-        interactive
-        el.message("%S", var(:nil))
-      end
-    RURI
-
-    assert_equal 1, diags.size
-    assert_match(/invalid variable name `nil`/, diags.first.message)
-  end
 end

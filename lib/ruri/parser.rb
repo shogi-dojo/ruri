@@ -331,14 +331,14 @@ module Ruri
         docstring = text
       end
 
-form_class =
-  if value_required
-    Forms::ConstantDefinition
-  elsif lisp_form == "defvar-local"
-    Forms::VariableLocalDefinition
-  else
-    Forms::VariableDefinition
-  end
+      form_class =
+        if value_required
+          Forms::ConstantDefinition
+        elsif lisp_form == "defvar-local"
+          Forms::VariableLocalDefinition
+        else
+          Forms::VariableDefinition
+        end
       @definitions << form_class.new(
         source_name: source_name,
         name: lisp_name,
@@ -892,33 +892,33 @@ form_class =
       )
     end
 
-# `keyword :begin` emits the Elisp keyword symbol :begin, which is
-# self-quoting; an ordinary symbol literal would emit (quote begin).
+    # `keyword :begin` emits the Elisp keyword symbol :begin, which is
+    # self-quoting; an ordinary symbol literal would emit (quote begin).
     def parse_keyword(node)
-  if node.block
-    error(node.location, "keyword does not take a block")
-    return nil
-  end
-  positional, keywords = split_arguments(node)
-  unless keywords.empty?
-    error(node.location, "keyword does not accept keyword arguments")
-    return nil
-  end
-  unless positional.length == 1
-    error(node.location, "keyword requires exactly one literal symbol argument")
-    return nil
-  end
+      if node.block
+        error(node.location, "keyword does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "keyword does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 1
+        error(node.location, "keyword requires exactly one literal symbol argument")
+        return nil
+      end
 
-  ok, source_name = extract_symbol(positional[0])
-  return unless ok
-  unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
-    error(positional[0].location,
-          "invalid keyword `#{source_name}`; must match [a-z][a-z0-9_]*")
-    return nil
-  end
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+      unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+        error(positional[0].location,
+              "invalid keyword `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return nil
+      end
 
-  Forms::Keyword.new(source_name: source_name, name: ":#{source_name.tr("_", "-")}")
-end
+      Forms::Keyword.new(source_name: source_name, name: ":#{source_name.tr("_", "-")}")
+    end
 
     def local_reference_call?(node)
       @local_names&.include?(node.name.to_s) &&
@@ -954,50 +954,50 @@ end
       Forms::VarRead.new(source_name: source_name, name: source_name.tr("_", "-"))
     end
 
-# `assign :name, value, ...` writes Emacs Lisp variables with setq.
-# Special-form positions are unevaluated symbols, so this is a typed
-# form rather than an el.* call. An even number of arguments is
-# required; every odd position is a literal symbol.
+    # `assign :name, value, ...` writes Emacs Lisp variables with setq.
+    # Special-form positions are unevaluated symbols, so this is a typed
+    # form rather than an el.* call. An even number of arguments is
+    # required; every odd position is a literal symbol.
     def parse_assign_statement(node)
-  if node.receiver
-    error(node.location, "unsupported construct: method call `assign` with explicit receiver")
-    return nil
-  end
-  if node.block
-    error(node.location, "assign does not take a block")
-    return nil
-  end
-  positional, keywords = split_arguments(node)
-  unless keywords.empty?
-    error(node.location, "assign does not accept keyword arguments")
-    return nil
-  end
-  if positional.length < 2 || positional.length.odd?
-    error(node.location, "assign requires name/value pairs")
-    return nil
-  end
+      if node.receiver
+        error(node.location, "unsupported construct: method call `assign` with explicit receiver")
+        return nil
+      end
+      if node.block
+        error(node.location, "assign does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "assign does not accept keyword arguments")
+        return nil
+      end
+      if positional.length < 2 || positional.length.odd?
+        error(node.location, "assign requires name/value pairs")
+        return nil
+      end
 
-pairs = []
-positional.each_slice(2) do |name_node, value_node|
-  unless literal_symbol_node?(name_node)
-    error(name_node.location,
-          "assign requires literal symbol variable names")
-    return nil
-  end
-  ok, source_name = extract_symbol(name_node)
-  return nil unless ok
-    unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
-      error(name_node.location,
-            "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
-      return nil
+      pairs = []
+      positional.each_slice(2) do |name_node, value_node|
+        unless literal_symbol_node?(name_node)
+          error(name_node.location,
+                "assign requires literal symbol variable names")
+          return nil
+        end
+        ok, source_name = extract_symbol(name_node)
+        return nil unless ok
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(name_node.location,
+                "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        value = parse_expression(value_node)
+        return nil unless value
+
+        pairs << [source_name.tr("_", "-"), value]
+      end
+      Forms::Assign.new(pairs: pairs)
     end
-    value = parse_expression(value_node)
-    return nil unless value
-
-    pairs << [source_name.tr("_", "-"), value]
-  end
-  Forms::Assign.new(pairs: pairs)
-end
 
     def parse_lambda(node)
       if node.arguments

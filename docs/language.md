@@ -32,7 +32,8 @@ everything else is rejected with a source position.
 | `doc "…"` | Documentation string. Exactly once, as the first statement of a `command` or `function` body; emits a defun docstring on its own line. `interactive`, when present, follows it. |
 | `variable :name [, value] [, "doc"]` | Emits `(defvar name [value] ["doc"])`. The value is any supported expression and may be omitted; the docstring is an optional literal string. |
 | `constant :name, value [, "doc"]` | Emits `(defconst name value ["doc"])`. The value is required. |
-| `custom :name, value [, "doc"] [, type: expression]` | Emits `(defcustom name value ["doc"] [:type expr])`. The optional `type:` expression lowers like any expression, so `type: :string` emits `:type 'string` and richer types use quote/quasiquote data. |
+| `custom :name, value [, "doc"] [, key: expression …]` | Emits `(defcustom name value ["doc"] [:key expr …])`. Any keyword pairs are accepted and rendered as `:key value` in source order, so standard keywords such as `group:`, `type:`, and `options:` work directly. Each value lowers like any expression, so `type: :string` emits `:type 'string` and richer types use quote/quasiquote data. Keyword names must match `[a-z][a-z0-9_]*` and are normalized from snake_case to kebab-case. |
+| `variable_local :name [, value] [, "doc"]` | Emits `(defvar-local name [value] ["doc"])`, declaring a variable that becomes buffer-local whenever it is set. Accepts the same arguments as `variable`. |
 | `require :name`, `provide :name` | Top-level only; emit `(require 'name)` and `(provide 'name)`, keeping source order among definitions. |
 | `interactive` | Emits `(interactive)`. Exactly once in each command body, directly after the optional docstring; no arguments, no block. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
@@ -40,6 +41,9 @@ everything else is rejected with a source position.
 | `el.message("value: %s", el.buffer_name)` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
 | `el.save_excursion do … end` | Emits an Elisp form with the Ruby block appended as body forms: `(save-excursion …)`. Positional arguments, nested statements, locals, and conditionals compose inside the body. Block parameters are rejected. |
 | `name = el.buffer_name` | Assigns a definition-local variable. The right-hand side may be any supported expression. A local is visible throughout its command or function, including before its first assignment (where its value is `nil`) and inside nested blocks. Compound assignments are rejected. |
+| `var(:fill_column)` | Reads an Emacs Lisp (dynamic, global, or buffer-local) variable, emitting the bare symbol `fill-column`. Definition-locals are referenced by their Ruby name instead. Exactly one literal symbol argument matching `[a-z][a-z0-9_]*`; `t` and `nil` are rejected. |
+| `assign :name, value [, :name2, value2 …]` | Emits `(setq name value …)`, writing an Emacs Lisp (dynamic or buffer-local) variable rather than a definition-local. Variable names are literal symbols in unevaluated position, so this is a typed form rather than an `el.setq` call, which would wrongly quote the symbol. Requires an even number of arguments; every odd position must be a literal symbol matching `[a-z][a-z0-9_]*`. |
+| `keyword :begin` | Emits the self-quoting Elisp keyword `:begin`. A plain symbol literal would emit `(quote begin)`, which is the wrong shape where keywords are expected, such as `org-element-property` arguments. Exactly one literal symbol argument matching `[a-z][a-z0-9_]*`. |
 | `if condition … elsif condition … else … end` | Evaluates supported expression conditions with Emacs Lisp truth semantics. Branches contain ordinary supported statements. `elsif` and `else` are optional. |
 | `unless condition … else … end` | The negated conditional form. The `else` branch is optional. |
 | `fn do \|value\| … end` | Creates a lexical lambda: `(lambda (ruri--local-value) …)`. Zero or more required positional parameters are accepted. The body uses normal Ruri statements and may capture surrounding locals. |
@@ -221,13 +225,16 @@ Everything outside the table above, including but not limited to:
   `.each` iteration (`Kernel.insert("x")`, `foo.bar`), safe-navigation,
   unsupported operators, unqualified arbitrary method calls, and
   `lambda`/`proc`.
-- Keyword arguments, splats, default parameters, heredocs, and interpolation.
+- Keyword arguments (except on `custom`, which accepts validated
+  `key: expression` pairs), splats, default parameters, heredocs, and
+  interpolation.
   `fn`, `function`, and `.each` accept the block parameters described above;
   `command`, `with_current_buffer`, and `el.*` accept only parameterless blocks;
   `insert` does not accept a block.
 - Executable top-level expressions: a `.ruri` file may contain only
   definitions and declarations — `command`, `function`, `variable`,
-  `constant`, `custom`, `require`, and `provide` (plus comments).
+  `variable_local`, `constant`, `custom`, `require`, and `provide`
+  (plus comments).
 - Nested `command` or `function` definitions; `interactive` outside a command body,
   duplicated, or not first; empty `with_current_buffer` blocks;
   `insert` with a block.
