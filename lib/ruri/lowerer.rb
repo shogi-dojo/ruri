@@ -176,6 +176,16 @@ module Ruri
         when Forms::Each
           collect_expression_locals(statement.collection, names, shadowed)
           collect_locals(statement.body, names, shadowed + [statement.parameter])
+        when Forms::Rescue
+          # The condition-case binding shadows the outer let inside the
+          # form, but the name stays declared so reads after the block see
+          # nil the way Ruby's leaky rescue locals do.
+          if statement.var && !names.include?(statement.var)
+            names << statement.var
+          end
+          collect_locals(statement.body, names, shadowed)
+          statement.clauses.each { |_, body| collect_locals(body, names, shadowed) }
+          collect_locals(statement.else_body, names, shadowed)
         when Forms::Call
           collect_expression_locals(statement, names, shadowed)
         when Forms::ExpressionStatement
@@ -211,6 +221,13 @@ module Ruri
         expression.arguments.each do |argument|
           collect_expression_locals(argument, names, shadowed)
         end
+      when Forms::Rescue
+        if expression.var && !names.include?(expression.var)
+          names << expression.var
+        end
+        collect_locals(expression.body, names, shadowed)
+        expression.clauses.each { |_, body| collect_locals(body, names, shadowed) }
+        collect_locals(expression.else_body, names, shadowed)
       end
     end
 
@@ -264,6 +281,8 @@ module Ruri
           ),
           lower_expression(statement.collection)
         )
+      when Forms::Rescue
+        lower_rescue(statement)
       when Forms::ExpressionStatement
         lower_expression(statement.expression)
       when Forms::Assign
@@ -336,9 +355,45 @@ module Ruri
           *expression.arguments.map { |argument| lower_expression(argument) }
         )
         expression.negated ? Elisp.list(Elisp.symbol("not"), operation) : operation
+      when Forms::Rescue
+        lower_rescue(expression)
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end
+    end
+
+    # (condition-case VAR BODY CLAUSES...) where each clause is
+    # ((CONDITIONS...) FORMS...); a body or handler's final form supplies
+    # the value. `else` becomes a (:success ...) handler, whose value wins
+    # when nothing was signalled. A single body form is emitted directly.
+    def lower_rescue(rescue_form)
+      items = [
+        Elisp.symbol("condition-case"),
+        rescue_form.var ? Elisp.symbol(rescue_form.var) : Elisp.symbol("nil"),
+        *protected_body(rescue_form.body)
+      ]
+      rescue_form.clauses.each do |conditions, body|
+        items << Elisp.list(
+          Elisp.inline_list(*conditions.map { |name| Elisp.symbol(name) }),
+          *body.map { |statement| lower_statement(statement) }
+        )
+      end
+      unless rescue_form.else_body.empty?
+        items << Elisp.list(
+          Elisp.symbol(":success"),
+          *rescue_form.else_body.map { |statement| lower_statement(statement) }
+        )
+      end
+      Elisp.list(*items)
+    end
+
+    def protected_body(statements)
+      forms = statements.map { |statement| lower_statement(statement) }
+      return [Elisp.symbol("nil")] if forms.empty?
+
+      return forms if forms.one?
+
+      [Elisp.list(Elisp.symbol("progn"), *forms)]
     end
 
     def lower_quoted_data(value)

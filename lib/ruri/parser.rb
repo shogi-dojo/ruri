@@ -133,7 +133,7 @@ module Ruri
       when Prism::InterpolatedSymbolNode
         [false, error(node.location, "symbol interpolation is not supported in v0")]
       else
-        [false, error(node.location, "command requires exactly one literal symbol argument")]
+        [false, error(node.location, "literal symbol argument required")]
       end
     end
 
@@ -509,6 +509,12 @@ module Ruri
       if node.is_a?(Prism::LocalVariableWriteNode) && !shadowed.include?(node.name.to_s)
         names[node.name.to_s] = true
       end
+      # `rescue ... => var` binds a local visible in the handlers and,
+      # matching Ruby, after the begin block.
+      if node.is_a?(Prism::RescueNode) && node.reference &&
+         !shadowed.include?(node.reference.name.to_s)
+        names[node.reference.name.to_s] = true
+      end
       if scoped_block_call?(node)
         parameter_names = raw_block_parameter_names(node.block)
         node.child_nodes.each do |child|
@@ -544,9 +550,7 @@ module Ruri
       interactive_problem_reported = false
       docstring_seen = false
       statements.each_with_index do |stmt, index|
-        if stmt.is_a?(Prism::LocalVariableWriteNode) ||
-           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
-           stmt.is_a?(Prism::WhileNode) || stmt.is_a?(Prism::UntilNode)
+        if structured_statement?(stmt)
           form = parse_structured_statement(stmt)
           forms << form if form
           next
@@ -716,6 +720,77 @@ module Ruri
       Forms::Docstring.new(text: text)
     end
 
+    # Statements handled structurally in every body context: locals,
+    # conditionals, loops, and begin/rescue blocks.
+    def structured_statement?(node)
+      node.is_a?(Prism::LocalVariableWriteNode) ||
+        node.is_a?(Prism::IfNode) || node.is_a?(Prism::UnlessNode) ||
+        node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode) ||
+        node.is_a?(Prism::BeginNode)
+    end
+
+    # `begin ... rescue [:cond, ...] [=> var] ... [else ...] end` lowers to
+    # condition-case. The error variable is an unevaluated binding position,
+    # so this is a typed form with a hygienic name rather than an el.* call.
+    # A bare `rescue` catches the Elisp `error` condition; `else` becomes a
+    # (:success ...) handler. ensure is a separate (later) construct.
+    def parse_begin_node(node)
+      if node.ensure_clause
+        error(node.ensure_clause.location, "begin/ensure is not supported yet")
+        return nil
+      end
+      unless node.rescue_clause
+        error(node.location, "begin requires a rescue clause")
+        return nil
+      end
+
+      var = nil
+      clauses = []
+      clause = node.rescue_clause
+      while clause
+        conditions = []
+        clause.exceptions.each do |exception|
+          ok, name = extract_symbol(exception)
+          return nil unless ok
+
+          unless name.match?(NAME_RE) && !%w[t nil].include?(name)
+            error(exception.location,
+                  "invalid rescue condition `#{name}`; must match [a-z][a-z0-9_]*")
+            return nil
+          end
+          conditions << name.tr("_", "-")
+        end
+        conditions = ["error"] if conditions.empty?
+
+        if clause.reference
+          source_name = clause.reference.name.to_s
+          unless source_name.match?(NAME_RE) && source_name != "t"
+            error(clause.reference.location,
+                  "invalid rescue variable name `#{source_name}`")
+            return nil
+          end
+          clause_var = generated_local_name(source_name)
+          if var && var != clause_var
+            error(clause.reference.location,
+                  "all rescue clauses must bind the same variable name")
+            return nil
+          end
+          var = clause_var
+        end
+
+        body = parse_value_body(clause.statements&.body || [])
+        clauses << [conditions, body]
+        clause = clause.subsequent
+      end
+
+      else_body = []
+      if node.else_clause
+        else_body = parse_value_body(node.else_clause.statements&.body || [])
+      end
+      body = parse_value_body(node.statements&.body || [])
+      Forms::Rescue.new(var: var, clauses: clauses, else_body: else_body, body: body)
+    end
+
     def parse_structured_statement(node)
       case node
       when Prism::LocalVariableWriteNode
@@ -728,6 +803,9 @@ module Ruri
         parse_loop(node, negated: false)
       when Prism::UntilNode
         parse_loop(node, negated: true)
+      when Prism::BeginNode
+        form = parse_begin_node(node)
+        form.is_a?(Forms::Rescue) ? form : nil
       else
         unsupported(node)
       end
@@ -890,6 +968,8 @@ module Ruri
                        "parentheses must contain exactly one expression")
         end
         parse_expression(expressions.first)
+      when Prism::BeginNode
+        parse_begin_node(node)
       when Prism::CallNode
         return parse_lambda(node) if unqualified_call?(node, :fn)
         return parse_function_reference(node) if unqualified_call?(node, :function)
@@ -1402,9 +1482,7 @@ module Ruri
     def parse_buffer_statements(statements)
       forms = []
       statements.each do |stmt|
-        if stmt.is_a?(Prism::LocalVariableWriteNode) ||
-           stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
-           stmt.is_a?(Prism::WhileNode) || stmt.is_a?(Prism::UntilNode)
+        if structured_statement?(stmt)
           form = parse_structured_statement(stmt)
           forms << form if form
           next

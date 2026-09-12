@@ -343,4 +343,51 @@ class LowererTest < Minitest::Test
                  lambda_node.items[1].items.map(&:name)
     assert_equal "unless", lambda_node.items[2].items.first.name
   end
+
+  def test_lowers_rescue_to_condition_case
+    function = parse(<<~RURI).first
+      function :safe do |a|
+        begin
+          el.message("%S", a)
+        rescue :arith_error, :range_error => problem
+          el.message("math")
+        rescue
+          el.message("other")
+        else
+          el.message("ok")
+        end
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    body_form = form.items[3].items[2]
+    assert_equal "condition-case", body_form.items.first.name
+    assert_equal "ruri--local-problem", body_form.items[1].name
+    assert_equal "message", body_form.items[2].items.first.name
+    specific = body_form.items[3]
+    assert_equal ["arith-error", "range-error"], specific.items.first.items.map(&:name)
+    assert_equal "message", specific.items[1].items.first.name
+    fallback = body_form.items[4]
+    assert_equal ["error"], fallback.items.first.items.map(&:name)
+    success = body_form.items[5]
+    assert_equal ":success", success.items.first.name
+  end
+
+  def test_rescue_local_is_declared_in_the_enclosing_let
+    function = parse(<<~RURI).first
+      function :leaky do
+        begin
+          el.message("body")
+        rescue => problem
+          el.message("caught")
+        end
+        el.message("%S", problem)
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    scope = form.items[3]
+    assert_equal "let", scope.items.first.name
+    assert_equal ["ruri--local-problem"], scope.items[1].items.map(&:name)
+  end
 end

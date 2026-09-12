@@ -111,6 +111,13 @@ module Ruri
     Conditional = Data.define(:condition, :then_body, :else_body, :negated)
     Loop = Data.define(:condition, :body, :negated)
     Each = Data.define(:collection, :parameter, :body)
+
+    # `begin/rescue[/else]` lowered to condition-case. +var+ is the hygienic
+    # error-object binding shared by every clause, or nil. +clauses+ are
+    # [conditions, body] pairs in source order; +conditions+ is a nonempty
+    # list of Elisp condition-name symbols (a bare rescue maps to `error`).
+    # +else_body+ runs, and supplies the value, when the body raises nothing.
+    Rescue = Data.define(:var, :clauses, :else_body, :body)
     # Preserves an expression used for its value as a body form.
     ExpressionStatement = Data.define(:expression)
   end

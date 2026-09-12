@@ -388,6 +388,30 @@
         (call-interactively #'ruri-test-prefix-cmd))
       (should (equal "nil" (buffer-string))))))
 
+(ert-deftest ruri-test/error-handling-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri rescue " t))
+         (source (expand-file-name "rescue.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_safe_div do |a, b|\n"
+              "  doc \"Divide A by B with error reporting.\"\n"
+              "  begin\n"
+              "    el.format(\"%S\", a / b)\n"
+              "  rescue :arith_error, :range_error => problem\n"
+              "    el.concat(\"math:\", el.error_message_string(problem))\n"
+              "  rescue\n"
+              "    \"other\"\n"
+              "  else\n"
+              "    el.concat(\"ok:\")\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; Success path: the else handler supplies the result.
+    (should (string-prefix-p "ok:" (ruri-test-safe-div 6 3)))
+    ;; A signalled arith-error is caught and the error object is bound.
+    (should (string-prefix-p "math:Arithmetic" (ruri-test-safe-div 1 0)))
+    ;; Any other error falls through to the bare rescue clause.
+    (should (equal "other" (ruri-test-safe-div "a" "b")))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

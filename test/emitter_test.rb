@@ -347,4 +347,34 @@ class EmitterTest < Minitest::Test
         (interactive "P")
     ELISP
   end
+
+  def test_emits_condition_case
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :safe do |a|
+        doc "Divide or report."
+        begin
+          a + 1
+        rescue :arith_error => problem
+          el.message("%s", el.error_message_string(problem))
+        rescue
+          el.message("other")
+        else
+          el.message("ok")
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (let (ruri--local-problem)
+    (condition-case ruri--local-problem
+      (+ ruri--local-a 1)
+      ((arith-error)
+        (message "%s"
+          (error-message-string ruri--local-problem)))
+      ((error)
+        (message "other"))
+      (:success
+        (message "ok"))))
+    ELISP
+  end
 end

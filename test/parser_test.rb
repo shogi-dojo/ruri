@@ -943,6 +943,105 @@ end')
     assert_equal 1, diag.line
   end
 
+  def test_parses_begin_rescue_with_conditions_binding_and_else
+    function = parse(<<~RURI).first
+      function :safe do |a, b|
+        begin
+          el.message("%S", a)
+        rescue :arith_error => problem
+          el.message("math")
+        rescue
+          el.message("other")
+        else
+          el.message("ok")
+        end
+      end
+    RURI
+
+    rescue_form = function.body.first.expression
+    assert_instance_of Ruri::Forms::Rescue, rescue_form
+    assert_equal "ruri--local-problem", rescue_form.var
+    assert_equal 2, rescue_form.clauses.length
+    assert_equal ["arith-error"], rescue_form.clauses[0][0]
+    assert_equal ["error"], rescue_form.clauses[1][0]
+    assert_equal 1, rescue_form.body.length
+    assert_equal 1, rescue_form.else_body.length
+  end
+
+  def test_rescue_variable_is_readable_after_the_block
+    function = parse(<<~RURI).first
+      function :leaky do
+        begin
+          el.message("body")
+        rescue => problem
+          el.message("caught")
+        end
+        el.message("%S", problem)
+      end
+    RURI
+
+    trailing = function.body.last
+    assert_equal "ruri--local-problem", trailing.arguments[1].name
+  end
+
+  def test_rejects_begin_without_rescue
+    diag = single_diagnostic(<<~RURI)
+      function :bare do
+        begin
+          el.message("x")
+        end
+      end
+    RURI
+
+    assert_match(/begin requires a rescue clause/, diag.message)
+    assert_equal 2, diag.line
+  end
+
+  def test_rejects_non_symbol_rescue_condition
+    diag = single_diagnostic(<<~RURI)
+      function :typed do
+        begin
+          el.message("x")
+        rescue 1
+          el.message("caught")
+        end
+      end
+    RURI
+
+    assert_match(/literal symbol argument required/, diag.message)
+    assert_equal 4, diag.line
+  end
+
+  def test_rejects_invalid_rescue_condition_name
+    diag = single_diagnostic(<<~RURI)
+      function :typed do
+        begin
+          el.message("x")
+        rescue :Not_A_Condition
+          el.message("caught")
+        end
+      end
+    RURI
+
+    assert_match(/invalid rescue condition `Not_A_Condition`/, diag.message)
+  end
+
+  def test_rejects_mismatched_rescue_variables
+    diag = single_diagnostic(<<~RURI)
+      function :mixed do
+        begin
+          el.message("x")
+        rescue :arith_error => first
+          el.message("math")
+        rescue => second
+          el.message("other")
+        end
+      end
+    RURI
+
+    assert_match(/all rescue clauses must bind the same variable name/, diag.message)
+  end
+
   def test_rejects_nested_command
     diag = single_diagnostic('command :a do
   interactive
