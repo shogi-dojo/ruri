@@ -509,4 +509,78 @@ class LowererTest < Minitest::Test
     assert_equal "seq-filter", lowered[1].items[3].items.first.name
     assert_equal "seq-find", lowered[2].items[3].items.first.name
   end
+
+  def test_lowers_let_to_let_star_with_sequential_bindings
+    function = parse(<<~RURI).first
+      function :scoped do
+        base = 2
+        let do |c, a = base, b = a|
+          list(a, b, c)
+        end
+      end
+    RURI
+
+    let_form = Ruri::Lowerer.lower([function]).first.items[3].items[3]
+    assert_equal "let*", let_form.items[0].name
+    bindings = let_form.items[1].items
+    # The bare required parameter binds nil explicitly; the bare-symbol
+    # shape would draw a byte-compiler "left uninitialized" warning.
+    assert_equal ["ruri--local-c", "nil"], bindings[0].items.map(&:name)
+    assert_equal ["ruri--local-a", "ruri--local-base"], bindings[1].items.map(&:name)
+    assert_equal ["ruri--local-b", "ruri--local-a"], bindings[2].items.map(&:name)
+  end
+
+  def test_let_nil_and_false_defaults_bind_explicit_nil
+    function = parse(<<~RURI).first
+      function :blank do
+        let do |x = nil, y = false|
+          x
+        end
+      end
+    RURI
+
+    let_form = Ruri::Lowerer.lower([function]).first.items[3]
+    assert_equal "let*", let_form.items[0].name
+    assert_equal [%w[ruri--local-x nil], %w[ruri--local-y nil]],
+                 (let_form.items[1].items.map { |binding| binding.items.map(&:name) })
+  end
+
+  def test_let_bindings_stay_out_of_the_definition_let
+    function = parse(<<~RURI).first
+      function :scoped do
+        let do |x = 1|
+          y = x
+          x = y
+        end
+        y
+      end
+    RURI
+
+    defun = Ruri::Lowerer.lower([function]).first
+    outer_let = defun.items[3]
+    # y is a leaky body local declared in the definition let; the let
+    # binding x is not, and writing to x inside the block mutates the
+    # let* binding with a plain setq.
+    assert_equal ["ruri--local-y"], outer_let.items[1].items.map(&:name)
+    inner = outer_let.items[2]
+    assert_equal "let*", inner.items[0].name
+    x_write = inner.items[3]
+    assert_equal "setq", x_write.items[0].name
+    assert_equal "ruri--local-x", x_write.items[1].name
+  end
+
+  def test_return_inside_let_wraps_the_definition_in_a_catch
+    function = parse(<<~RURI).first
+      function :escape do
+        let do |x = 1|
+          return x
+        end
+        :after
+      end
+    RURI
+
+    catch_form = Ruri::Lowerer.lower([function]).first.items[3]
+    assert_equal "catch", catch_form.items[0].name
+    assert_equal "ruri--return-1", catch_form.items[1].value.name
+  end
 end

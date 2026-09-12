@@ -531,6 +531,49 @@
     ;; An empty selection is Elisp nil, and find misses too.
     (should (equal '(nil nil) (ruri-test-stats (list 1))))))
 
+(ert-deftest ruri-test/let-bindings-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri let " t))
+         (source (expand-file-name "let-bindings.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_let_values do\n"
+              "  doc \"Sequential bindings and the nil idiom.\"\n"
+              "  base = 10\n"
+              "  let do |c, a = base, b = a|\n"
+              "    list(a, b, c)\n"
+              "  end\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_let_shadowing do\n"
+              "  doc \"The let binding shadows and restores the outer local.\"\n"
+              "  x = \"outer\"\n"
+              "  captured = let do |x = \"inner\"|\n"
+              "    x\n"
+              "  end\n"
+              "  list(captured, x)\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_let_keeps_builtins_reachable do\n"
+              "  doc \"A binding named message must not shadow the Elisp function.\"\n"
+              "  list(el.message(\"ok\"), let do |message = 5| message end)\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_return_from_let do\n"
+              "  doc \"Return targets the definition across the let.\"\n"
+              "  let do |x = 1|\n"
+              "    return :done\n"
+              "  end\n"
+              "  :unreached\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; Sequential defaults: a reads base, b reads the new a, c binds nil.
+    (should (equal '(10 10 nil) (ruri-test-let-values)))
+    ;; The let binding shadows the outer local and is restored after.
+    (should (equal '("inner" "outer") (ruri-test-let-shadowing)))
+    ;; A binding named message must not shadow the Elisp function.
+    (should (equal '("ok" 5) (ruri-test-let-keeps-builtins-reachable)))
+    ;; return targets the enclosing definition from inside the let.
+    (should (eq 'done (ruri-test-return-from-let)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

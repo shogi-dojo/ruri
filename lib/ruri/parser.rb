@@ -34,6 +34,9 @@ module Ruri
       # Lexical placement stack for break/next/return: :fn for definition
       # and lambda bodies, :loop for while/until/each bodies.
       @exit_scopes = []
+      # Binding names not yet in scope while parsing a sequential default
+      # (let), so a forward reference gets a precise diagnostic.
+      @later_binding_names = []
     end
 
     def parse
@@ -508,6 +511,15 @@ module Ruri
       @local_names = previous_names
     end
 
+    # Extends the visible local names for the duration of the block.
+    def with_local_names(names)
+      previous_names = @local_names
+      @local_names = ((@local_names || []) + names).uniq
+      yield
+    ensure
+      @local_names = previous_names
+    end
+
     def collect_local_names(node, names = {}, shadowed = [])
       return names.keys unless node
 
@@ -534,14 +546,19 @@ module Ruri
 
     def scoped_block_call?(node)
       node.is_a?(Prism::CallNode) && node.block &&
-        (unqualified_call?(node, :fn) || node.name == :each)
+        (unqualified_call?(node, :fn) || node.name == :each ||
+         unqualified_call?(node, :let))
     end
 
     def raw_block_parameter_names(block)
-      required = block.parameters&.parameters&.requireds || []
-      required.filter_map do |parameter|
+      parameters = block.parameters&.parameters
+      return [] unless parameters
+
+      names = (parameters.requireds + parameters.optionals).filter_map do |parameter|
         parameter.name.to_s if parameter.respond_to?(:name)
       end
+      names << parameters.rest.name.to_s if parameters.rest
+      names
     end
 
     def generated_local_name(source_name)
@@ -621,6 +638,10 @@ module Ruri
           end
         when :throw
           if (form = parse_throw(stmt))
+            forms << form
+          end
+        when :let
+          if (form = parse_let(stmt))
             forms << form
           end
         else
@@ -889,6 +910,42 @@ module Ruri
       Forms::Catch.new(tag: tag, body: body)
     end
 
+    # `let do |a = 1, b = a + 1, c| … end` introduces block-scoped
+    # bindings with hygienic names. Initializer expressions are parsed
+    # left to right with only the earlier bindings in scope, matching
+    # Ruby's own parameter-default evaluation; lowering emits `let*`, so
+    # a parameter without a default binds nil (the `(let (x))` idiom).
+    # There is nothing to collect, so rest parameters are rejected.
+    def parse_let(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `let` with explicit receiver")
+        return nil
+      end
+      if node.arguments
+        error(node.location, "let takes no call arguments; bind with block parameter defaults")
+        return nil
+      end
+      unless node.block
+        error(node.location, "let requires a do...end or {...} block")
+        return nil
+      end
+
+      parameters = parse_block_parameters(node.block, "let", sequential_defaults: true)
+      return nil unless parameters
+
+      if parameters.rest
+        error(node.block.location, "let takes no rest parameter")
+        return nil
+      end
+
+      body = with_exit_scope(:block) do
+        with_local_names(parameters.names) do
+          parse_value_body(node.block.body&.body || [])
+        end
+      end
+      Forms::Let.new(parameters: generated_parameter_list(parameters), body: body)
+    end
+
     def parse_structured_statement(node)
       case node
       when Prism::LocalVariableWriteNode
@@ -953,12 +1010,14 @@ module Ruri
     # cannot be lowered, or nil when it is fine.
     def exit_placement_error(_node, name)
       nearest = @exit_scopes.reverse.find do |kind|
-        kind == :loop || kind == :fn || kind == :definition
+        %i[loop fn definition block].include?(kind)
       end
       if nearest == :loop
         nil
       elsif nearest == :fn
         "`#{name}` cannot cross a fn boundary; use it directly inside while, until, or each"
+      elsif nearest == :block
+        "`#{name}` cannot cross a let block boundary; use it directly inside the loop"
       else
         "`#{name}` is only allowed inside while, until, or each"
       end
@@ -1166,6 +1225,7 @@ module Ruri
         return parse_keyword(node) if unqualified_call?(node, :keyword)
         return parse_catch(node) if unqualified_call?(node, :catch)
         return parse_throw(node) if unqualified_call?(node, :throw)
+        return parse_let(node) if unqualified_call?(node, :let)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -1179,6 +1239,11 @@ module Ruri
         # a zero-argument call. Ruri locals have command-wide lexical scope,
         # so reinterpret that precise shape when a matching assignment exists.
         return parse_local_read(node) if local_reference_call?(node)
+        if @later_binding_names.include?(node.name.to_s)
+          return error(node.location,
+                       "let initializer cannot reference the later binding `#{node.name}`; " \
+                       "bindings see only the bindings to their left")
+        end
 
         error(node.location,
               "unsupported expression: use a Ruri expression or an el.* call")
@@ -1347,7 +1412,12 @@ module Ruri
     # required positionals, optionals carrying parsed default expressions,
     # and an optional trailing rest. Keyword, block, destructured, and
     # post-rest parameters remain unsupported.
-    def parse_block_parameters(block, construct)
+    #
+    # With +sequential_defaults+, each optional's default is parsed with
+    # only the bindings to its left in scope (used by `let`, matching
+    # Ruby's own parameter-default evaluation); otherwise every default
+    # sees every parameter, as for function entry defaults.
+    def parse_block_parameters(block, construct, sequential_defaults: false)
       block_parameters = block.parameters
       return Forms::ParameterList.new(required: [], optionals: [], rest: nil) unless block_parameters
 
@@ -1380,13 +1450,25 @@ module Ruri
       names << rest_node.name.to_s if rest_node
 
       # Defaults run at invocation entry with every parameter already bound,
-      # so they may reference any parameter regardless of position.
+      # so they may reference any parameter regardless of position. For
+      # sequential defaults (let), binding i's initializer sees only the
+      # bindings before it, so a later binding is an undefined local.
       previous_names = @local_names
       begin
-        @local_names = ((@local_names || []) + names).uniq
-        defaults = optional_nodes.map { |parameter| parse_expression(parameter.value) }
+        defaults = optional_nodes.each_with_index.map do |parameter, index|
+          visible = if sequential_defaults
+                      required + optional_nodes.take(index).map { |node| node.name.to_s }
+                    else
+                      names
+                    end
+          @local_names = ((previous_names || []) + visible).uniq
+          @later_binding_names = sequential_defaults ?
+                                 optional_nodes.drop(index + 1).map { |node| node.name.to_s } : []
+          parse_expression(parameter.value)
+        end
       ensure
         @local_names = previous_names
+        @later_binding_names = []
       end
       return nil if defaults.any?(&:nil?)
 
@@ -1728,6 +1810,10 @@ module Ruri
           end
         when :throw
           if (form = parse_throw(stmt))
+            forms << form
+          end
+        when :let
+          if (form = parse_let(stmt))
             forms << form
           end
         else

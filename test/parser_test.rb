@@ -1437,4 +1437,134 @@ end')
 
     assert_match(/doc is only allowed once, as the first statement/, diag.message)
   end
+
+  def test_parses_let_bindings_with_sequential_scope
+    function = parse(<<~RURI).first
+      function :scoped do
+        base = 10
+        let do |c, a = base, b = a|
+          list(a, b, c)
+        end
+      end
+    RURI
+
+    let_form = function.body[1].expression
+    assert_instance_of Ruri::Forms::Let, let_form
+    parameters = let_form.parameters
+    assert_equal ["ruri--local-c"], parameters.required
+    assert_nil parameters.rest
+    first, second = parameters.optionals
+    assert_equal "ruri--local-a", first.name
+    assert_equal "ruri--local-base", first.default.name
+    # The second initializer sees the binding to its left, not the later
+    # scope; `b = a` reads the let binding of a.
+    assert_equal "ruri--local-a", second.default.name
+    assert_equal 1, let_form.body.length
+    assert_instance_of Ruri::Forms::ExpressionStatement, let_form.body[0]
+  end
+
+  def test_parses_let_as_an_expression_value
+    function = parse(<<~RURI).first
+      function :capture do
+        result = let do |x = 1|
+          x
+        end
+        result
+      end
+    RURI
+
+    write = function.body[0]
+    assert_instance_of Ruri::Forms::LocalWrite, write
+    assert_instance_of Ruri::Forms::Let, write.value
+    assert_equal "ruri--local-x", write.value.parameters.optionals.first.name
+  end
+
+  def test_parses_a_literal_nil_let_default_as_a_nil_binding
+    function = parse(<<~RURI).first
+      function :blank do
+        let do |x = nil|
+          x
+        end
+      end
+    RURI
+
+    let_form = function.body[0].expression
+    assert_equal "ruri--local-x", let_form.parameters.optionals.first.name
+    assert_equal Ruri::Forms::Literal.new(kind: :nil, value: nil),
+                 let_form.parameters.optionals.first.default
+  end
+
+  def test_rejects_let_rest_parameter
+    diag = single_diagnostic(<<~RURI)
+      function :collect do
+        let do |a, *rest|
+          a
+        end
+      end
+    RURI
+
+    assert_match(/let takes no rest parameter/, diag.message)
+  end
+
+  def test_rejects_let_call_arguments_and_missing_block
+    diags = diagnostics_of(<<~RURI)
+      function :args do
+        let(:a) do
+          :a
+        end
+      end
+
+      function :bare do
+        let
+        :ok
+      end
+    RURI
+
+    assert_match(/let takes no call arguments/, diags[0].message)
+    assert_match(/let requires a do\.\.\.end or \{\.\.\.\} block/, diags[1].message)
+  end
+
+  def test_rejects_break_crossing_a_let_block
+    diag = single_diagnostic(<<~RURI)
+      function :escape do
+        while true
+          let do |x = 1|
+            break
+          end
+        end
+      end
+    RURI
+
+    assert_match(/`break` cannot cross a let block boundary/, diag.message)
+    assert_equal 4, diag.line
+  end
+
+  def test_rejects_let_forward_reference_of_a_later_binding
+    diag = single_diagnostic(<<~RURI)
+      function :forward do
+        let do |b = c, c = 2|
+          b
+        end
+      end
+    RURI
+
+    assert_match(/let initializer cannot reference the later binding `c`/, diag.message)
+    assert_equal 2, diag.line
+  end
+
+  def test_let_initializer_may_read_an_outer_local_shadowed_by_a_later_binding
+    function = parse(<<~RURI).first
+      function :outer_shadow do
+        c = 9
+        let do |b = c, c = 2|
+          b
+        end
+      end
+    RURI
+
+    let_form = function.body[1].expression
+    # b's initializer reads the outer c, which the let* evaluation order
+    # makes correct: the new c binds only after the initializer runs.
+    assert_equal "ruri--local-c", let_form.parameters.optionals.first.default.name
+  end
 end

@@ -21,8 +21,11 @@ module Ruri
     end
 
     # Boundaries where an exit belongs to the inner construct: nested loops
-    # own their break/next, lambdas own their returns.
-    LOOP_EXIT_BOUNDARIES = [Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration].freeze
+    # own their break/next, lambdas own their returns, let blocks own
+    # neither (the parser rejects exits crossing a let).
+    LOOP_EXIT_BOUNDARIES = [
+      Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration, Forms::Let
+    ].freeze
 
     # `.map` → mapcar, `.select` → seq-filter, `.find` → seq-find. The
     # latter two need `(require 'seq)` in the source, like any seq use.
@@ -133,6 +136,8 @@ module Ruri
         body_has_exit?(form.body, klass, boundaries) ||
           body_has_exit?(form.ensure_body, klass, boundaries)
       when Forms::Catch
+        body_has_exit?(form.body, klass, boundaries)
+      when Forms::Let
         body_has_exit?(form.body, klass, boundaries)
       when Forms::WithCurrentBuffer
         body_has_exit?(form.body, klass, boundaries)
@@ -288,6 +293,8 @@ module Ruri
           collect_locals(statement.ensure_body, names, shadowed)
         when Forms::Catch
           collect_locals(statement.body, names, shadowed)
+        when Forms::Let
+          collect_locals(statement.body, names, shadowed + statement.parameters.names)
         when Forms::Throw
           collect_expression_locals(statement.value, names, shadowed)
         when Forms::Break, Forms::Next, Forms::Return
@@ -341,6 +348,8 @@ module Ruri
         collect_locals(expression.body, names, shadowed)
       when Forms::Throw
         collect_expression_locals(expression.value, names, shadowed)
+      when Forms::Let
+        collect_locals(expression.body, names, shadowed + expression.parameters.names)
       when Forms::Iteration
         collect_expression_locals(expression.collection, names, shadowed)
         collect_locals(expression.body, names, shadowed + [expression.parameter])
@@ -399,6 +408,8 @@ module Ruri
         lower_catch(statement)
       when Forms::Throw
         lower_throw(statement)
+      when Forms::Let
+        lower_let(statement)
       when Forms::Break
         lower_exit(statement, @break_tags.last)
       when Forms::Next
@@ -491,6 +502,8 @@ module Ruri
         lower_catch(expression)
       when Forms::Throw
         lower_throw(expression)
+      when Forms::Let
+        lower_let(expression)
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end
@@ -511,6 +524,32 @@ module Ruri
         Elisp.symbol("throw"),
         Elisp.quote(Elisp.symbol(throw_form.tag)),
         lower_expression(throw_form.value)
+      )
+    end
+
+    # `let` lowers to let*: the parser parsed each initializer with only
+    # the earlier bindings in scope, so sequential binding is the
+    # contract. A parameter without a default (or with a literal
+    # nil/false one) binds nil explicitly — the bare-symbol `(let* (x))`
+    # shape draws a byte-compiler "left uninitialized" warning.
+    def lower_let(let_form)
+      bindings = let_form.parameters.required.map do |name|
+        Elisp.list(Elisp.symbol(name), Elisp.symbol("nil"))
+      end
+      let_form.parameters.optionals.each do |optional|
+        bindings << if nil_default?(optional.default)
+                      Elisp.list(Elisp.symbol(optional.name), Elisp.symbol("nil"))
+                    else
+                      Elisp.list(
+                        Elisp.symbol(optional.name),
+                        lower_expression(optional.default)
+                      )
+                    end
+      end
+      Elisp.list(
+        Elisp.symbol("let*"),
+        Elisp.list(*bindings),
+        *let_form.body.map { |statement| lower_statement(statement) }
       )
     end
 

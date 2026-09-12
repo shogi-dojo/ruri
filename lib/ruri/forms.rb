@@ -118,6 +118,14 @@ module Ruri
     # side-effecting `.each`, which lowers to mapc.
     Iteration = Data.define(:name, :collection, :parameter, :body)
 
+    # Scoped bindings: `let do |a = 1, b = a + 1, c| … end`. +parameters+
+    # is a hygienic ParameterList whose rest slot is always nil (rejected
+    # by the parser). Initializers were parsed left to right, so each may
+    # read the bindings before it; lowering emits `let*`, and a parameter
+    # without a default binds nil. The body's final form supplies the
+    # value, and the bindings are visible only inside the block.
+    Let = Data.define(:parameters, :body)
+
     # `begin/rescue[/else]` lowered to condition-case. +var+ is the hygienic
     # error-object binding shared by every clause, or nil. +clauses+ are
     # [conditions, body] pairs in source order; +conditions+ is a nonempty
