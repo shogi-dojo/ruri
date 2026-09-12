@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.9
+# Ruri language contract — version 0.10
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.9: every construct below is supported,
+is the exact scope of version 0.10: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -27,15 +27,15 @@ everything else is rejected with a source position.
 
 | Source construct | Meaning and restriction |
 | --- | --- |
-| `command :hello_buffer do … end` | Top-level command definition; emits `(defun hello-buffer () …)`. Exactly one literal symbol argument, no parameters, no receiver, no block parameters, no nested commands. Multiple distinct commands per file are allowed. |
-| `function :decorate do \|value\| … end` | Top-level noninteractive function definition; emits `(defun decorate (ruri--local-value) …)`. Zero or more required positional parameters are accepted. The final expression is the return value. |
+| `command :hello_buffer do \|arg\| … end` | Top-level command definition; emits `(defun hello-buffer (ruri--local-arg) …)`. Exactly one literal symbol argument and no receiver; block parameters follow the function parameter rules (required, optional with defaults, rest). No nested commands. Multiple distinct commands per file are allowed. |
+| `function :decorate do \|value\| … end` | Top-level noninteractive function definition; emits `(defun decorate (ruri--local-value) …)`. Required, optional, and rest positional parameters are accepted (see Function definitions). The final expression is the return value. |
 | `doc "…"` | Documentation string. Exactly once, as the first statement of a `command` or `function` body; emits a defun docstring on its own line. `interactive`, when present, follows it. |
 | `variable :name [, value] [, "doc"]` | Emits `(defvar name [value] ["doc"])`. The value is any supported expression and may be omitted; the docstring is an optional literal string. |
 | `constant :name, value [, "doc"]` | Emits `(defconst name value ["doc"])`. The value is required. |
 | `custom :name, value [, "doc"] [, key: expression …]` | Emits `(defcustom name value ["doc"] [:key expr …])`. Any keyword pairs are accepted and rendered as `:key value` in source order, so standard keywords such as `group:`, `type:`, and `options:` work directly. Each value lowers like any expression, so `type: :string` emits `:type 'string` and richer types use quote/quasiquote data. Keyword names must match `[a-z][a-z0-9_]*` and are normalized from snake_case to kebab-case. |
 | `variable_local :name [, value] [, "doc"]` | Emits `(defvar-local name [value] ["doc"])`, declaring a variable that becomes buffer-local whenever it is set. Accepts the same arguments as `variable`. |
 | `require :name`, `provide :name` | Top-level only; emit `(require 'name)` and `(provide 'name)`, keeping source order among definitions. |
-| `interactive` | Emits `(interactive)`. Exactly once in each command body, directly after the optional docstring; no arguments, no block. |
+| `interactive "P"` | Emits `(interactive "P")`, or plain `(interactive)` without an argument. Exactly once in each command body, directly after the optional docstring. The spec is at most one literal string, read by Emacs at invocation time (`"P"` raw prefix, `"p"` numeric prefix, `"r"` region, `"sPrompt: "` string, and so on); no block. The spec is never evaluated as Ruri code. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
 | `el.message("value: %s", el.buffer_name)` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
@@ -46,7 +46,7 @@ everything else is rejected with a source position.
 | `keyword :begin` | Emits the self-quoting Elisp keyword `:begin`. A plain symbol literal would emit `(quote begin)`, which is the wrong shape where keywords are expected, such as `org-element-property` arguments. Exactly one literal symbol argument matching `[a-z][a-z0-9_]*`. |
 | `if condition … elsif condition … else … end` | Evaluates supported expression conditions with Emacs Lisp truth semantics. Branches contain ordinary supported statements. `elsif` and `else` are optional. |
 | `unless condition … else … end` | The negated conditional form. The `else` branch is optional. |
-| `fn do \|value\| … end` | Creates a lexical lambda: `(lambda (ruri--local-value) …)`. Zero or more required positional parameters are accepted. The body uses normal Ruri statements and may capture surrounding locals. |
+| `fn do \|value\| … end` | Creates a lexical lambda: `(lambda (ruri--local-value) …)`. Required, optional, and rest positional parameters are accepted (see Function definitions). The body uses normal Ruri statements and may capture surrounding locals. |
 | `function(:buffer_name)` | Creates the named function value `(function buffer-name)`. The literal symbol is normalized from snake_case to kebab-case. |
 | `list(1, :two)` | Constructs an evaluated Lisp list: `(list 1 'two)`. Unlike Ruby array syntax, this produces a list rather than a vector. |
 | `cons(:key, value)` | Constructs one cons cell: `(cons 'key ruri--local-value)`. Exactly two evaluated arguments are required. |
@@ -148,9 +148,8 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 ### Function values
 
 - `fn` takes no call arguments and requires a block. Its block parameters are
-  Ruby's ordinary `|name, other|` syntax. Version 0.8 accepts required
-  positional parameters only; optional, rest, keyword, and block parameters
-  are rejected.
+  Ruby's ordinary `|name, other|` syntax and follow the parameter rules
+  described in Parameters (required, optional with defaults, rest).
 - Lambda parameters use the same hygienic local-name lowering and shadow a
   surrounding local with the same source name. Parameters are visible only
   inside their lambda. Other surrounding locals are captured lexically and
@@ -162,11 +161,35 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
   check that Emacs has defined the named function; byte compilation or runtime
   invocation reports a missing definition.
 
+### Parameters
+
+- Block parameters of `function`, `command`, and `fn` accept required
+  positionals, optionals with defaults (`|a, scale = 2|`), and one trailing
+  rest (`|first, *more|`). They are emitted as Elisp `&optional` and
+  `&rest` sections in binding order.
+- Elisp plain `defun` arguments have no per-argument default expression, so
+  an optional with a default lowers to an entry-time
+  `(unless name (setq name default))` emitted after the docstring (and after
+  `interactive` in a command), before the body. A literal `nil` or `false`
+  default emits no code, because that is already Elisp's own behavior.
+- Defaults are therefore applied by nil-collision: the default runs
+  whenever the argument is nil at entry, including when the caller passes
+  nil explicitly. This is the standard plain-`defun` idiom and is
+  documented behavior, not a bug.
+- A default expression is parsed with every parameter in scope, so it may
+  reference any parameter (for example `|width, fallback = width|`); body
+  locals do not exist yet at entry time and cannot appear in defaults.
+  Ruby's own grammar applies to defaults, since they are written as block
+  parameter defaults.
+- Keyword parameters (`|a, key: 1|`), block parameters (`|a, &b|`),
+  destructured parameters (`|(a, b)|`), and parameters after the rest
+  argument (`|a, *b, c|`) are rejected.
+
 ### Function definitions
 
 - `function :name do |argument| … end` defines a top-level, noninteractive
-  Elisp function. It accepts zero or more required positional parameters.
-  Optional, rest, keyword, and block parameters are rejected in version 0.8.
+  Elisp function. It accepts required, optional, and rest positional
+  parameters as described above.
 - Parameters and assigned locals use hygienic `ruri--local-` names. Assigning
   to a parameter mutates its argument binding; other assigned names are
   initialized in a lexical `let` around the body.
@@ -226,11 +249,11 @@ Everything outside the table above, including but not limited to:
   unsupported operators, unqualified arbitrary method calls, and
   `lambda`/`proc`.
 - Keyword arguments (except on `custom`, which accepts validated
-  `key: expression` pairs), splats, default parameters, heredocs, and
+  `key: expression` pairs), call-site splats (`f(*args)`), heredocs, and
   interpolation.
-  `fn`, `function`, and `.each` accept the block parameters described above;
-  `command`, `with_current_buffer`, and `el.*` accept only parameterless blocks;
-  `insert` does not accept a block.
+  `fn`, `function`, `.each`, and `command` accept the block parameters
+  described above; `with_current_buffer` and `el.*` accept only
+  parameterless blocks; `insert` does not accept a block.
 - Executable top-level expressions: a `.ruri` file may contain only
   definitions and declarations — `command`, `function`, `variable`,
   `variable_local`, `constant`, `custom`, `require`, and `provide`
@@ -267,9 +290,8 @@ Generated Lisp (`examples/hello.el`):
 
 ## Reserved for later versions
 
-Optional and rest function or lambda parameters, command parameters and
-interactive specifications, nested quasiquotation, loop exits, and a raw Lisp
-escape hatch remain out of scope.
+Nested quasiquotation, loop exits, and a raw Lisp escape hatch remain out
+of scope.
 
 ## Path toward broad Elisp coverage
 
@@ -279,20 +301,19 @@ and body forms provide the open-ended function, macro, and special-form layer.
 The remaining language work is primarily about representing values and lexical
 structure safely:
 
-1. Optional and rest parameters for functions and lambdas; v0.8 provides
-   top-level noninteractive functions, value returns, recursion, function
-   references, lexical lambdas, captures, and required positional parameters.
-2. Nested quasiquotation and richer reader data; v0.6 provides evaluated
+1. Nested quasiquotation and richer reader data; v0.6 provides evaluated
    lists and cons cells, literal quote, and single-level quasiquote with
    unquote and splicing.
-3. Broader iteration, loop exits, and assignment operators; v0.7 provides
+2. Broader iteration, loop exits, and assignment operators; v0.7 provides
    boolean, comparison, arithmetic, `while`, `until`, and side-effecting
    `.each` syntax.
-4. Command argument lists and interactive specifications.
-5. Variable and package structure; v0.9 provides `variable`, `constant`,
+3. Variable and package structure; v0.9 provides `variable`, `constant`,
    `custom` (with `type:`), `require`, and `provide`, documentation strings
    for commands and functions, and `var` reads of dynamic Elisp variables.
-6. Error handling and nonlocal exits (`condition-case`, `unwind-protect`,
+4. Parameters and interactive commands; v0.10 provides optional and rest
+   parameters for functions and lambdas, command parameters, and
+   interactive string specifications with entry-time parameter defaults.
+5. Error handling and nonlocal exits (`condition-case`, `unwind-protect`,
    `catch`, `throw`) remain future work.
 
 Some Elisp facilities will remain available through explicit `el.*` forms

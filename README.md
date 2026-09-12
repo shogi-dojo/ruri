@@ -100,8 +100,9 @@ Named function values use `function(:identity)`, which emits
 `(function identity)` and can be passed to hooks, timers, key bindings, and
 higher-order Emacs functions.
 
-Top-level noninteractive functions use the same Ruby block style. Required
-block parameters become hygienic Elisp arguments, and the final expression is
+Top-level noninteractive functions use the same Ruby block style. Required,
+optional, and rest block parameters become hygienic Elisp arguments
+(`&optional` with entry-time defaults, `&rest`), and the final expression is
 the return value:
 
 ```ruby
@@ -237,13 +238,15 @@ batch Emacs.
 
 ## Language
 
-The exact v0.9 contract — supported constructs, name rules, expression
+The exact v0.10 contract — supported constructs, name rules, expression
 semantics, and everything explicitly rejected — is
 [`docs/language.md`](docs/language.md). Top-level definitions include commands,
-noninteractive functions with required parameters and value returns, and
+noninteractive functions with required, optional, and rest parameters and
+value returns, and
 package structure: `variable`, `constant`, `custom` (with `type:`),
 `require`, and `provide`. Definitions accept documentation strings via a
-leading `doc "..."` statement. Commands support `interactive`,
+leading `doc "..."` statement. Commands accept parameters and `interactive`
+specifications (such as `"P"` for the raw prefix argument), support
 `with_current_buffer`, `insert`, lexical locals, conditionals, and explicit
 `el.function_name(...)` calls with optional body blocks, lexical `fn` values,
 and named `function(:name)` references. Expressions include lists, cons cells,
@@ -309,8 +312,7 @@ boundary.
 
 ## Status & limitations
 
-This is an early vertical slice. Not supported (by design): optional and rest
-function or lambda parameters, command parameters and interactive specs, nested
+This is an early vertical slice. Not supported (by design): nested
 quasiquotation, loop exits, string interpolation, heredocs, nested commands,
 a custom major mode, file watchers, byte-compile integration from the
 compiler, and everything else listed in the contract's rejection section.
