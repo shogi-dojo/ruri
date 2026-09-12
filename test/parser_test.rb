@@ -984,7 +984,7 @@ end')
     assert_equal "ruri--local-problem", trailing.arguments[1].name
   end
 
-  def test_rejects_begin_without_rescue
+  def test_rejects_begin_without_rescue_or_ensure
     diag = single_diagnostic(<<~RURI)
       function :bare do
         begin
@@ -993,7 +993,7 @@ end')
       end
     RURI
 
-    assert_match(/begin requires a rescue clause/, diag.message)
+    assert_match(/begin requires a rescue or ensure clause/, diag.message)
     assert_equal 2, diag.line
   end
 
@@ -1040,6 +1040,39 @@ end')
     RURI
 
     assert_match(/all rescue clauses must bind the same variable name/, diag.message)
+  end
+
+  def test_parses_begin_ensure_with_and_without_rescue
+    definitions = parse(<<~RURI)
+      function :guarded do
+        begin
+          el.message("work")
+        ensure
+          el.message("cleanup")
+        end
+      end
+
+      function :both do |a|
+        begin
+          el.message("%S", a)
+        rescue :arith_error
+          el.message("math")
+        ensure
+          el.message("cleanup")
+        end
+      end
+    RURI
+
+    plain = definitions[0].body.first.expression
+    assert_instance_of Ruri::Forms::Ensure, plain
+    assert_equal 1, plain.body.length
+    assert_equal 1, plain.ensure_body.length
+
+    composed = definitions[1].body.first.expression
+    assert_instance_of Ruri::Forms::Ensure, composed
+    assert_equal 1, composed.body.length
+    assert_instance_of Ruri::Forms::Rescue, composed.body.first
+    assert_equal 1, composed.body.first.clauses.length
   end
 
   def test_rejects_nested_command

@@ -377,4 +377,28 @@ class EmitterTest < Minitest::Test
         (message "ok"))))
     ELISP
   end
+
+  def test_emits_unwind_protect_for_rescue_and_ensure
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :both do
+        doc "Composed clauses."
+        begin
+          el.message("work")
+        rescue :arith_error
+          el.message("math")
+        ensure
+          el.message("cleanup")
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (unwind-protect
+    (condition-case nil
+      (message "work")
+      ((arith-error)
+        (message "math")))
+    (message "cleanup"))
+    ELISP
+  end
 end

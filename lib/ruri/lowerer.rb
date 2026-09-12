@@ -186,6 +186,9 @@ module Ruri
           collect_locals(statement.body, names, shadowed)
           statement.clauses.each { |_, body| collect_locals(body, names, shadowed) }
           collect_locals(statement.else_body, names, shadowed)
+        when Forms::Ensure
+          collect_locals(statement.body, names, shadowed)
+          collect_locals(statement.ensure_body, names, shadowed)
         when Forms::Call
           collect_expression_locals(statement, names, shadowed)
         when Forms::ExpressionStatement
@@ -228,6 +231,9 @@ module Ruri
         collect_locals(expression.body, names, shadowed)
         expression.clauses.each { |_, body| collect_locals(body, names, shadowed) }
         collect_locals(expression.else_body, names, shadowed)
+      when Forms::Ensure
+        collect_locals(expression.body, names, shadowed)
+        collect_locals(expression.ensure_body, names, shadowed)
       end
     end
 
@@ -283,6 +289,8 @@ module Ruri
         )
       when Forms::Rescue
         lower_rescue(statement)
+      when Forms::Ensure
+        lower_ensure(statement)
       when Forms::ExpressionStatement
         lower_expression(statement.expression)
       when Forms::Assign
@@ -357,6 +365,8 @@ module Ruri
         expression.negated ? Elisp.list(Elisp.symbol("not"), operation) : operation
       when Forms::Rescue
         lower_rescue(expression)
+      when Forms::Ensure
+        lower_ensure(expression)
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end
@@ -394,6 +404,16 @@ module Ruri
       return forms if forms.one?
 
       [Elisp.list(Elisp.symbol("progn"), *forms)]
+    end
+
+    # (unwind-protect BODY FORMS...): the cleanup forms always run, and the
+    # result is the body's value even on the error path.
+    def lower_ensure(ensure_form)
+      Elisp.list(
+        Elisp.symbol("unwind-protect"),
+        *protected_body(ensure_form.body),
+        *ensure_form.ensure_body.map { |statement| lower_statement(statement) }
+      )
     end
 
     def lower_quoted_data(value)

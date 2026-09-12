@@ -730,65 +730,74 @@ module Ruri
     end
 
     # `begin ... rescue [:cond, ...] [=> var] ... [else ...] end` lowers to
-    # condition-case. The error variable is an unevaluated binding position,
-    # so this is a typed form with a hygienic name rather than an el.* call.
-    # A bare `rescue` catches the Elisp `error` condition; `else` becomes a
-    # (:success ...) handler. ensure is a separate (later) construct.
+    # condition-case, and `begin ... [rescue ...] end ... ensure ... end`
+    # to unwind-protect. The error variable is an unevaluated binding
+    # position, so these are typed forms with hygienic names rather than
+    # el.* calls. A bare `rescue` catches the Elisp `error` condition;
+    # `else` becomes a (:success ...) handler. With both clauses, the
+    # rescue form nests inside the ensure form.
     def parse_begin_node(node)
+      unless node.rescue_clause || node.ensure_clause
+        error(node.location, "begin requires a rescue or ensure clause")
+        return nil
+      end
+
+      rescue_form = nil
+      if node.rescue_clause
+        var = nil
+        clauses = []
+        clause = node.rescue_clause
+        while clause
+          conditions = []
+          clause.exceptions.each do |exception|
+            ok, name = extract_symbol(exception)
+            return nil unless ok
+
+            unless name.match?(NAME_RE) && !%w[t nil].include?(name)
+              error(exception.location,
+                    "invalid rescue condition `#{name}`; must match [a-z][a-z0-9_]*")
+              return nil
+            end
+            conditions << name.tr("_", "-")
+          end
+          conditions = ["error"] if conditions.empty?
+
+          if clause.reference
+            source_name = clause.reference.name.to_s
+            unless source_name.match?(NAME_RE) && source_name != "t"
+              error(clause.reference.location,
+                    "invalid rescue variable name `#{source_name}`")
+              return nil
+            end
+            clause_var = generated_local_name(source_name)
+            if var && var != clause_var
+              error(clause.reference.location,
+                    "all rescue clauses must bind the same variable name")
+              return nil
+            end
+            var = clause_var
+          end
+
+          body = parse_value_body(clause.statements&.body || [])
+          clauses << [conditions, body]
+          clause = clause.subsequent
+        end
+
+        else_body = []
+        if node.else_clause
+          else_body = parse_value_body(node.else_clause.statements&.body || [])
+        end
+        protected = parse_value_body(node.statements&.body || [])
+        rescue_form = Forms::Rescue.new(var: var, clauses: clauses,
+                                        else_body: else_body, body: protected)
+      end
+
       if node.ensure_clause
-        error(node.ensure_clause.location, "begin/ensure is not supported yet")
-        return nil
+        ensure_body = parse_value_body(node.ensure_clause.statements&.body || [])
+        inner = rescue_form || parse_value_body(node.statements&.body || [])
+        return Forms::Ensure.new(body: Array(inner), ensure_body: ensure_body)
       end
-      unless node.rescue_clause
-        error(node.location, "begin requires a rescue clause")
-        return nil
-      end
-
-      var = nil
-      clauses = []
-      clause = node.rescue_clause
-      while clause
-        conditions = []
-        clause.exceptions.each do |exception|
-          ok, name = extract_symbol(exception)
-          return nil unless ok
-
-          unless name.match?(NAME_RE) && !%w[t nil].include?(name)
-            error(exception.location,
-                  "invalid rescue condition `#{name}`; must match [a-z][a-z0-9_]*")
-            return nil
-          end
-          conditions << name.tr("_", "-")
-        end
-        conditions = ["error"] if conditions.empty?
-
-        if clause.reference
-          source_name = clause.reference.name.to_s
-          unless source_name.match?(NAME_RE) && source_name != "t"
-            error(clause.reference.location,
-                  "invalid rescue variable name `#{source_name}`")
-            return nil
-          end
-          clause_var = generated_local_name(source_name)
-          if var && var != clause_var
-            error(clause.reference.location,
-                  "all rescue clauses must bind the same variable name")
-            return nil
-          end
-          var = clause_var
-        end
-
-        body = parse_value_body(clause.statements&.body || [])
-        clauses << [conditions, body]
-        clause = clause.subsequent
-      end
-
-      else_body = []
-      if node.else_clause
-        else_body = parse_value_body(node.else_clause.statements&.body || [])
-      end
-      body = parse_value_body(node.statements&.body || [])
-      Forms::Rescue.new(var: var, clauses: clauses, else_body: else_body, body: body)
+      rescue_form
     end
 
     def parse_structured_statement(node)
@@ -804,8 +813,7 @@ module Ruri
       when Prism::UntilNode
         parse_loop(node, negated: true)
       when Prism::BeginNode
-        form = parse_begin_node(node)
-        form.is_a?(Forms::Rescue) ? form : nil
+        parse_begin_node(node)
       else
         unsupported(node)
       end

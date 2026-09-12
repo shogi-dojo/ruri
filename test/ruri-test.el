@@ -412,6 +412,38 @@
     ;; Any other error falls through to the bare rescue clause.
     (should (equal "other" (ruri-test-safe-div "a" "b")))))
 
+(ert-deftest ruri-test/unwind-protect-runs-cleanup-on-error-path ()
+  (let* ((dir (make-temp-file "ruri ensure " t))
+         (source (expand-file-name "ensure.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_cleanups, 0, \"Cleanup counter.\"\n\n"
+              "function :ruri_test_guarded do\n"
+              "  doc \"Returns 42 while always running cleanup.\"\n"
+              "  begin\n"
+              "    42\n"
+              "  ensure\n"
+              "    assign :ruri_test_cleanups, var(:ruri_test_cleanups) + 1\n"
+              "  end\n"
+              "end\n\n"
+              "function :ruri_test_rescued do |a, b|\n"
+              "  doc \"Catches a math error and still runs cleanup.\"\n"
+              "  begin\n"
+              "    el.format(\"%S\", a / b)\n"
+              "  rescue :arith_error\n"
+              "    \"math\"\n"
+              "  ensure\n"
+              "    assign :ruri_test_cleanups, var(:ruri_test_cleanups) + 1\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The body value survives the cleanup, which runs exactly once.
+    (should (= 42 (ruri-test-guarded)))
+    (should (= 1 ruri-test-cleanups))
+    ;; The handler supplies the value on the error path, and the cleanup
+    ;; still runs after the handler.
+    (should (equal "math" (ruri-test-rescued 1 0)))
+    (should (= 2 ruri-test-cleanups))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

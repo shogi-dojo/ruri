@@ -390,4 +390,22 @@ class LowererTest < Minitest::Test
     assert_equal "let", scope.items.first.name
     assert_equal ["ruri--local-problem"], scope.items[1].items.map(&:name)
   end
+
+  def test_lowers_ensure_to_unwind_protect_with_the_body_value
+    function = parse(<<~RURI).first
+      function :guarded do
+        begin
+          el.message("work")
+        ensure
+          el.message("cleanup")
+        end
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    unwind = form.items[3]
+    assert_equal "unwind-protect", unwind.items.first.name
+    assert_equal "message", unwind.items[1].items.first.name
+    assert_equal "cleanup", unwind.items[2].items[1].value
+  end
 end

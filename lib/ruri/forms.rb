@@ -118,6 +118,10 @@ module Ruri
     # list of Elisp condition-name symbols (a bare rescue maps to `error`).
     # +else_body+ runs, and supplies the value, when the body raises nothing.
     Rescue = Data.define(:var, :clauses, :else_body, :body)
+    # `begin/ensure` lowered to unwind-protect. +body+ holds the protected
+    # forms (a lone Rescue form when both clauses are present); the
+    # unwound value is the body's value, never the cleanup's.
+    Ensure = Data.define(:body, :ensure_body)
     # Preserves an expression used for its value as a body form.
     ExpressionStatement = Data.define(:expression)
   end
