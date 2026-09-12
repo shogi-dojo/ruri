@@ -12,6 +12,11 @@ module Ruri
     # Top-level noninteractive function with hygienic required parameters.
     FunctionDefinition = Data.define(:source_name, :name, :parameters, :body)
 
+    # Top-level variable definitions. +value+ is nil for a valueless
+    # defvar; +docstring+ is an optional source string.
+    VariableDefinition = Data.define(:source_name, :name, :value, :docstring)
+    ConstantDefinition = Data.define(:source_name, :name, :value, :docstring)
+
     # The required first statement of every command body.
     Interactive = Data.define
 

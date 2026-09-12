@@ -15,6 +15,8 @@ module Ruri
         case definition
         when Forms::Command then lower_command(definition)
         when Forms::FunctionDefinition then lower_function_definition(definition)
+        when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
+        when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
         else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
         end
       end
@@ -65,6 +67,17 @@ module Ruri
       end
     end
 
+    def lower_variable_definition(definition, lisp_form)
+      items = [Elisp.symbol(lisp_form), Elisp.symbol(definition.name)]
+      items << lower_expression(definition.value) if definition.value
+      items << lower_docstring_text(definition.docstring) if definition.docstring
+      Elisp.list(*items)
+    end
+
+    def lower_docstring_text(text)
+      Elisp.docstring(Elisp.string(text))
+    end
+
     def wrap_locals(locals, forms)
       [Elisp.list(
         Elisp.symbol("let"),
@@ -74,7 +87,7 @@ module Ruri
     end
 
     def lower_docstring(docstring)
-      Elisp.docstring(Elisp.string(docstring.text))
+      lower_docstring_text(docstring.text)
     end
 
     def collect_locals(statements, names = [], shadowed = [])

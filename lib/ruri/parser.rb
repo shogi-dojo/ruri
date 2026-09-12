@@ -30,6 +30,7 @@ module Ruri
       @diagnostics = []
       @definitions = []
       @seen_names = {}
+      @seen_variable_names = {}
     end
 
     def parse
@@ -169,6 +170,8 @@ module Ruri
       case node.name
       when :command then parse_command_definition(node)
       when :function then parse_function_definition(node)
+      when :variable then parse_variable_definition(node, "variable", "defvar", false)
+      when :constant then parse_variable_definition(node, "constant", "defconst", true)
       else unsupported(node)
       end
     end
@@ -267,6 +270,91 @@ module Ruri
       end
       @seen_names[lisp_name] = kind
       [source_name, lisp_name]
+    end
+
+    # `variable :name [value] ["doc"]` and `constant :name value ["doc"]`
+    # lower to defvar/defconst. Variables and functions live in separate
+    # Elisp namespaces, so names are checked against their own map.
+    def parse_variable_definition(node, kind, lisp_form, value_required)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `#{kind}` with explicit receiver")
+        return
+      end
+      if node.block
+        error(node.location, "#{kind} does not take a block")
+        return
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "#{kind} does not accept keyword arguments")
+        return
+      end
+      min_args = value_required ? 2 : 1
+      unless positional.length.between?(min_args, 3)
+        range = value_required ? "two or three" : "one to three"
+        error(node.location, "#{kind} requires #{range} arguments: :name#{value_required ? '' : ' [, value]'}, and an optional docstring")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid #{kind} name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+      lisp_name = source_name.tr("_", "-")
+      if @seen_variable_names.key?(lisp_name)
+        previous_kind = @seen_variable_names.fetch(lisp_name)
+        error(positional[0].location,
+              "duplicate #{kind} definition `#{lisp_name}`; already defined as #{previous_kind}")
+        return
+      end
+      @seen_variable_names[lisp_name] = kind
+
+      value = nil
+      if positional[1]
+        value = parse_expression(positional[1])
+        return unless value
+      end
+
+      docstring = nil
+      if positional[2]
+        ok, text = extract_string(positional[2])
+        return unless ok
+
+        docstring = text
+      end
+
+      form_class = value_required ? Forms::ConstantDefinition : Forms::VariableDefinition
+      @definitions << form_class.new(
+        source_name: source_name,
+        name: lisp_name,
+        value: value,
+        docstring: docstring
+      )
+    end
+
+    # Splits a call's arguments into positional nodes and keyword
+    # (name, value) pairs from a trailing `name: value` hash. DSL
+    # definition forms use the keyword pairs sparingly and explicitly.
+    def split_arguments(node)
+      args = node.arguments&.arguments || []
+      keywords = []
+      positional = []
+      args.each do |arg|
+        if arg.is_a?(Prism::KeywordHashNode)
+          arg.elements.each do |element|
+            next unless element.is_a?(Prism::AssocNode) && element.key.is_a?(Prism::SymbolNode)
+
+            keywords << [element.key.unescaped.to_s, element.value]
+          end
+        else
+          positional << arg
+        end
+      end
+      [positional, keywords]
     end
 
     def literal_symbol_node?(node)
