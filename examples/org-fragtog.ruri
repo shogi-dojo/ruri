@@ -3,9 +3,8 @@
 # test/fixtures/org-fragtog-original.el).
 #
 # This is a semantic conversion, not byte-identical: define-minor-mode is
-# emulated with a defvar-local plus a toggle function, the &optional
-# parameter of org-fragtog--disable-frag is split into a second function,
-# and the let* bindings become sequential Ruri locals. Compile with:
+# emulated with a defvar-local plus a toggle function, and the let*
+# bindings become sequential Ruri locals. Compile with:
 #   bundle exec ruby bin/ruri compile examples/org-fragtog.ruri --output org-fragtog.el
 
 require :org
@@ -75,7 +74,9 @@ function :org_fragtog__post_cmd do
     end
     if cursor_frag
       if var(:org_fragtog_preview_delay) > 0
-        assign :org_fragtog__timer, el.run_with_idle_timer(var(:org_fragtog_preview_delay), nil, function(:org_fragtog__disable_frag_renewed))      else
+        assign :org_fragtog__timer,
+               el.run_with_idle_timer(var(:org_fragtog_preview_delay), nil, function(:org_fragtog__disable_frag), cursor_frag, true)
+      else
         el.org_fragtog__disable_frag(cursor_frag)
       end
     end
@@ -146,19 +147,17 @@ function :org_fragtog__set_point_after_disable_frag do |frag|
   end
 end
 
-function :org_fragtog__disable_frag do |frag|
-  doc "Disable the Org LaTeX fragment preview for the fragment FRAG."
+function :org_fragtog__disable_frag do |frag, renew = nil|
+  doc "Disable the Org LaTeX fragment preview for the fragment FRAG.\nIf RENEW is non-nil, renew the fragment at point."
+  if renew
+    frag = el.org_fragtog__cursor_frag
+    assign :org_fragtog__prev_frag, frag
+    assign :org_fragtog__timer, nil
+  end
   if frag
     el.org_clear_latex_preview(el.org_fragtog__frag_start(frag), el.org_fragtog__frag_end(frag))
     el.org_fragtog__set_point_after_disable_frag(frag)
   end
-end
-
-function :org_fragtog__disable_frag_renewed do
-  doc "Renew the fragment at point, then disable it.\nRenewing happens in case point was adjusted; see the Emacs Lisp manual,\n21.6 Adjusting Point After Commands."
-  assign :org_fragtog__prev_frag, el.org_fragtog__cursor_frag
-  assign :org_fragtog__timer, nil
-  el.org_fragtog__disable_frag(el.org_fragtog__cursor_frag)
 end
 
 provide :org_fragtog

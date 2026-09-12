@@ -405,6 +405,11 @@
       (should (memq (quote org-fragtog--post-cmd) post-command-hook))
       ;; With no fragments around, the hook function must run without error.
       (org-fragtog--post-cmd)
+      ;; The renewed-disable path takes the &optional RENEW argument, and
+      ;; the plain path relies on its nil default.
+      (org-fragtog--disable-frag nil t)
+      (org-fragtog--disable-frag nil)
+      (should (null org-fragtog--timer))
       (org-fragtog-mode)
       (should (null org-fragtog-mode))
       (should (not (memq (quote org-fragtog--post-cmd) post-command-hook))))))

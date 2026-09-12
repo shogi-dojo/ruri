@@ -287,12 +287,12 @@ element access. The conversion loads and runs in Emacs.
 
 What the conversion needed that greet did not: `variable_local` for
 `defvar-local` state, `assign` for `setq` on dynamic variables,
-`keyword :begin` for self-quoting keyword symbols, and multi-keyword
-`custom` (`group:`, `type:`, `options:`). Remaining structural deviations
+`keyword :begin` for self-quoting keyword symbols, multi-keyword
+`custom` (`group:`, `type:`, `options:`), and `&optional` with a passed
+timer argument. Remaining structural deviations
 are documented at the top of the converted file: `define-minor-mode` is
-emulated as a variable plus toggle function, `&optional` parameters are
-split into separate functions, `let*` becomes sequential locals with
-hygienic names, and comments are not carried over.
+emulated as a variable plus toggle function, `let*` becomes sequential locals
+with hygienic names, and comments are not carried over.
 
 ## Compiler architecture
 
