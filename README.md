@@ -257,6 +257,23 @@ validated internal forms; it never evaluates the input (no `eval`, no
 emitter escapes every string, so literal text can never become additional
 Lisp forms.
 
+## Byte-identical conversion
+
+`examples/greet.ruri` is a basic elisp package (`test/fixtures/greet.el`)
+written in Ruri. Compiling it produces code that is **byte-identical** to
+the hand-written file — every defvar, defconst, defcustom (with docstring
+and `:type`), defun with docstring, require/provide, and call matches the
+conventional layout a human writes:
+
+```sh
+bundle exec ruby bin/ruri compile examples/greet.ruri --output examples/greet.el
+```
+
+The only bytes that differ are comment lines: the package header/footer
+comments are not expressible in the language, and generated files carry
+Ruri's own provenance header. `test/byte_identity_test.rb` asserts the
+byte equality after dropping comment-only lines from both files.
+
 ## Compiler architecture
 
 Compilation has four explicit stages:

@@ -1,0 +1,27 @@
+# The greet package (examples/greet.el) written in Ruri.
+# Compiled with:
+#   bundle exec ruby bin/ruri compile examples/greet.ruri --output examples/greet.el
+require :subr_x
+
+variable :greet_name, "Emacs", "Name used in greetings."
+
+constant :greet_version, "1.0", "Version of the greet package."
+
+custom :greet_style, :plain, "How greetings are formatted.", type: :symbol
+
+command :greet_hello do
+  doc "Say hello to the configured name."
+  interactive
+  el.message("Hello, %s!", var(:greet_name))
+end
+
+command :greet_report do
+  doc "Report the package configuration."
+  interactive
+  el.message("name=%S style=%S version=%S",
+             var(:greet_name),
+             var(:greet_style),
+             var(:greet_version))
+end
+
+provide :greet

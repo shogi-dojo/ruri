@@ -2,6 +2,7 @@
 
 # Entry point for the Ruby compiler test suite:
 #   bundle exec ruby -Itest test/compiler_test.rb
+require_relative "byte_identity_test"
 require_relative "cli_test"
 require_relative "emitter_test"
 require_relative "elisp_test"
