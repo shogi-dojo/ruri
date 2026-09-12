@@ -574,6 +574,37 @@
     ;; return targets the enclosing definition from inside the let.
     (should (eq 'done (ruri-test-return-from-let)))))
 
+(ert-deftest ruri-test/times-loops-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri times " t))
+         (source (expand-file-name "times.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_times_sums do\n"
+              "  doc \"Counting loop with next and break.\"\n"
+              "  total = 0\n"
+              "  5.times do |i|\n"
+              "    next if i == 2\n"
+              "    total = total + i\n"
+              "  end\n"
+              "  9.times do |i|\n"
+              "    break if i == 1\n"
+              "    total = total + 10\n"
+              "  end\n"
+              "  total\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_times_value do\n"
+              "  doc \"dotimes yields nil, unlike Ruby's Integer#times.\"\n"
+              "  3.times do |i|\n"
+              "    el.identity(i)\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; next skips i == 2, so 0 + 1 + 3 + 4; break fires on the second
+    ;; pass, adding 10 exactly once.
+    (should (= 18 (ruri-test-times-sums)))
+    ;; The loop form itself contributes no value.
+    (should (null (ruri-test-times-value)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

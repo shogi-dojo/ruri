@@ -24,7 +24,8 @@ module Ruri
     # own their break/next, lambdas own their returns, let blocks own
     # neither (the parser rejects exits crossing a let).
     LOOP_EXIT_BOUNDARIES = [
-      Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration, Forms::Let
+      Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration,
+      Forms::Times, Forms::Let
     ].freeze
 
     # `.map` → mapcar, `.select` → seq-filter, `.find` → seq-find. The
@@ -127,6 +128,8 @@ module Ruri
       when Forms::Each
         body_has_exit?(form.body, klass, boundaries)
       when Forms::Iteration
+        body_has_exit?(form.body, klass, boundaries)
+      when Forms::Times
         body_has_exit?(form.body, klass, boundaries)
       when Forms::Rescue
         body_has_exit?(form.body, klass, boundaries) ||
@@ -278,6 +281,9 @@ module Ruri
         when Forms::Iteration
           collect_expression_locals(statement.collection, names, shadowed)
           collect_locals(statement.body, names, shadowed + [statement.parameter])
+        when Forms::Times
+          collect_expression_locals(statement.count, names, shadowed)
+          collect_locals(statement.body, names, shadowed + [statement.parameter])
         when Forms::Rescue
           # The condition-case binding shadows the outer let inside the
           # form, but the name stays declared so reads after the block see
@@ -400,6 +406,8 @@ module Ruri
         lower_each(statement)
       when Forms::Iteration
         lower_iteration(statement)
+      when Forms::Times
+        lower_times(statement)
       when Forms::Rescue
         lower_rescue(statement)
       when Forms::Ensure
@@ -691,6 +699,25 @@ module Ruri
           lower_expression(iteration.collection)
         )
       end
+    end
+
+    # `count.times` lowers to dotimes with an inline (COUNTER COUNT)
+    # binding and the body as trailing forms. The value is nil, matching
+    # dotimes rather than Ruby's Integer#times.
+    def lower_times(times_form)
+      break_tag, next_tag = enter_loop_scopes(times_form.body)
+      body = times_form.body.map { |statement| lower_statement(statement) }
+      leave_loop_scopes(break_tag, next_tag)
+      body = [catch_wrap(next_tag, body)] if next_tag
+      dotimes_form = Elisp.list(
+        Elisp.symbol("dotimes"),
+        Elisp.list(
+          Elisp.symbol(times_form.parameter),
+          lower_expression(times_form.count)
+        ),
+        *body
+      )
+      break_tag ? catch_wrap(break_tag, [dotimes_form]) : dotimes_form
     end
 
     # Shared lowering for `.each` and the iteration forms: enters the loop

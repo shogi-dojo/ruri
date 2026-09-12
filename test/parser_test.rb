@@ -1605,4 +1605,42 @@ end')
     assert_match(/el\.cl-loop takes bindings or names in unevaluated/, diags[0].message)
     assert_match(/el\.when-let takes bindings or names in unevaluated/, diags[1].message)
   end
+
+  def test_parses_times_as_a_counting_loop
+    function = parse(<<~RURI).first
+      function :repeat do
+        total = 0
+        3.times do |i|
+          total = total + i
+        end
+        total
+      end
+    RURI
+
+    times_form = function.body[1]
+    assert_instance_of Ruri::Forms::Times, times_form
+    assert_equal 3, times_form.count.value
+    assert_equal "ruri--local-i", times_form.parameter
+    assert_equal 1, times_form.body.length
+  end
+
+  def test_times_is_statement_only_and_rejects_extra_block_parameters
+    diags = diagnostics_of(<<~RURI)
+      function :value_use do
+        result = 3.times do |i|
+          i
+        end
+        result
+      end
+
+      function :two_params do
+        3.times do |i, j|
+          i
+        end
+      end
+    RURI
+
+    assert_match(/unsupported expression/, diags[0].message)
+    assert_match(/times requires exactly one block parameter/, diags[1].message)
+  end
 end

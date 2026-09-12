@@ -126,6 +126,11 @@ module Ruri
     # value, and the bindings are visible only inside the block.
     Let = Data.define(:parameters, :body)
 
+    # Counting loop: `count.times do |i| … end` lowers to dotimes with a
+    # hygienic counter. The form's value is nil, matching dotimes rather
+    # than Ruby's Integer#times.
+    Times = Data.define(:count, :parameter, :body)
+
     # `begin/rescue[/else]` lowered to condition-case. +var+ is the hygienic
     # error-object binding shared by every clause, or nil. +clauses+ are
     # [conditions, body] pairs in source order; +conditions+ is a nonempty

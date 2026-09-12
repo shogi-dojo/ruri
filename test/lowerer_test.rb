@@ -453,6 +453,35 @@ class LowererTest < Minitest::Test
     assert_equal "ruri--next-2", next_catch.items[1].value.name
   end
 
+  def test_lowers_times_to_dotimes_with_loop_tags
+    function = parse(<<~RURI).first
+      function :repeat do
+        total = 0
+        5.times do |i|
+          next if i == 1
+        end
+        9.times do |i|
+          break if i == 3
+        end
+        total
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first.items[3]
+    dotimes_form = lowered.items[3]
+    assert_equal "dotimes", dotimes_form.items.first.name
+    binding = dotimes_form.items[1]
+    assert_equal "ruri--local-i", binding.items[0].name
+    assert_equal 5, binding.items[1].value
+    next_catch = dotimes_form.items[2]
+    assert_equal "catch", next_catch.items.first.name
+    assert_equal "ruri--next-1", next_catch.items[1].value.name
+    break_catch = lowered.items[4]
+    assert_equal "catch", break_catch.items.first.name
+    assert_equal "ruri--break-2", break_catch.items[1].value.name
+    assert_equal "dotimes", break_catch.items[2].items.first.name
+  end
+
   def test_return_wraps_the_defun_body_in_a_catch
     function = parse(<<~RURI).first
       function :early do

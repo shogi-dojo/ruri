@@ -605,7 +605,7 @@ module Ruri
           forms << form if form
           next
         end
-        if %i[each map select find].include?(stmt.name) && stmt.receiver
+        if %i[each map select find times].include?(stmt.name) && stmt.receiver
           form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next
@@ -1113,10 +1113,10 @@ module Ruri
       parse_block_iteration(node, :each)
     end
 
-    # Shared shape for `.each`, `.map`, `.select`, and `.find`: a receiver
-    # expression, no call arguments, and exactly one required block
-    # parameter. Only the block body differs — each is statement-scoped,
-    # the iteration forms parse it for value.
+    # Shared shape for `.each`, `.map`, `.select`, `.find`, and `.times`: a
+    # receiver expression, no call arguments, and exactly one required
+    # block parameter. Only the block body differs — each and times are
+    # statement-scoped, the iteration forms parse it for value.
     def parse_block_iteration(node, name)
       if node.arguments
         error(node.location, "#{name} does not take call arguments")
@@ -1142,7 +1142,7 @@ module Ruri
       begin
         @local_names = ((@local_names || []) + parameters.names).uniq
         body = with_exit_scope(:loop) do
-          if name == :each
+          if %i[each times].include?(name)
             parse_buffer_statements(node.block.body&.body || [])
           else
             parse_value_body(node.block.body&.body || [])
@@ -1154,6 +1154,12 @@ module Ruri
       if name == :each
         Forms::Each.new(
           collection: collection,
+          parameter: generated_local_name(parameters.required.first),
+          body: body
+        )
+      elsif name == :times
+        Forms::Times.new(
+          count: collection,
           parameter: generated_local_name(parameters.required.first),
           body: body
         )
@@ -1774,7 +1780,7 @@ module Ruri
                       node.is_a?(Prism::BreakNode) ||
                       node.is_a?(Prism::NextNode) || node.is_a?(Prism::ReturnNode)
       return true unless node.is_a?(Prism::CallNode)
-      return false if node.name == :each && node.receiver
+      return false if %i[each times].include?(node.name) && node.receiver
       return false if node.receiver.nil? &&
                       %i[interactive command with_current_buffer insert doc assign].include?(node.name)
       return false if node.receiver.nil? && node.name == :function && node.block
@@ -1799,7 +1805,7 @@ module Ruri
           forms << form if form
           next
         end
-        if %i[each map select find].include?(stmt.name) && stmt.receiver
+        if %i[each map select find times].include?(stmt.name) && stmt.receiver
           form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next

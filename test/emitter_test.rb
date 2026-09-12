@@ -492,4 +492,21 @@ class EmitterTest < Minitest::Test
       (list ruri--local-a ruri--local-b ruri--local-c)))
     ELISP
   end
+
+  def test_emits_times_as_dotimes
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :beep do
+        doc "Ring thrice."
+        3.times do |i|
+          el.message("%d", i)
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (dotimes
+    (ruri--local-i 3)
+    (message "%d" ruri--local-i))
+    ELISP
+  end
 end
