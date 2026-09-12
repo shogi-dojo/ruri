@@ -1705,7 +1705,7 @@ module Ruri
       argument = single_expression_argument(node, "quote")
       return nil unless argument
 
-      value = parse_quoted_data(argument, quasiquote: false, allow_splice: false)
+      value = parse_quoted_data(argument, depth: 0)
       value ? Forms::Quote.new(value: value) : nil
     end
 
@@ -1715,7 +1715,7 @@ module Ruri
       argument = single_expression_argument(node, "quasiquote")
       return nil unless argument
 
-      value = parse_quoted_data(argument, quasiquote: true, allow_splice: false)
+      value = parse_quoted_data(argument, depth: 1)
       value ? Forms::QuasiQuote.new(value: value) : nil
     end
 
@@ -1733,7 +1733,13 @@ module Ruri
       error(node.location, "#{name} requires exactly one argument")
     end
 
-    def parse_quoted_data(node, quasiquote:, allow_splice:)
+    # Parses quoted data at +depth+ quasiquote levels: 0 is a plain quote
+    # context (no escapes), 1 the inside of one quasiquote, and so on. An
+    # unquote at depth 1 escapes fully — its content is an ordinary
+    # runtime expression — while at deeper levels it escapes exactly one
+    # level and its content stays quoted data. Emacs follows Common Lisp
+    # here, so the nested structure is emitted faithfully.
+    def parse_quoted_data(node, depth:, allow_splice: false)
       case node
       when Prism::StringNode, Prism::InterpolatedStringNode,
            Prism::IntegerNode, Prism::FloatNode, Prism::TrueNode,
@@ -1742,46 +1748,80 @@ module Ruri
         parse_expression(node)
       when Prism::ArrayNode
         elements = node.elements.map do |element|
-          parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
+          parse_quoted_data(element, depth: depth, allow_splice: true)
         end
         elements.any?(&:nil?) ? nil : Forms::Vector.new(elements: elements)
       when Prism::CallNode
         if unqualified_call?(node, :list)
-          return parse_quoted_list(node, quasiquote: quasiquote)
+          return parse_quoted_list(node, depth: depth)
         end
         if unqualified_call?(node, :cons)
-          return parse_quoted_cons(node, quasiquote: quasiquote)
+          return parse_quoted_cons(node, depth: depth)
         end
-        if quasiquote && unqualified_call?(node, :unquote)
-          return parse_template_escape(node, splice: false)
+        if depth >= 1 && unqualified_call?(node, :quasiquote)
+          return parse_nested_quasiquote(node, depth: depth)
         end
 
-        if quasiquote && unqualified_call?(node, :splice)
+        if depth >= 1 && unqualified_call?(node, :unquote)
+          return parse_template_escape(node, splice: false) if depth == 1
+
+          return parse_deep_escape(node, splice: false, depth: depth)
+        end
+
+        if depth >= 1 && unqualified_call?(node, :splice)
           unless allow_splice
             return error(node.location,
                          "splice must appear inside a quasiquoted list or vector")
           end
-          return parse_template_escape(node, splice: true)
+          return parse_template_escape(node, splice: true) if depth == 1
+
+          return parse_deep_escape(node, splice: true, depth: depth)
         end
 
         error(node.location,
-              "quoted data supports only literals, arrays, list, and cons")
+              "quoted data supports only literals, arrays, list, cons, quasiquote, and unquote")
       else
         error(node.location,
               "unsupported quoted data: #{node.class.name.delete_prefix("Prism::")}")
       end
     end
 
-    def parse_quoted_list(node, quasiquote:)
+    # A quasiquote written inside another quasiquote: its content is
+    # quoted data one level deeper.
+    def parse_nested_quasiquote(node, depth:)
+      return nil unless block_absent?(node, "quasiquote")
+
+      argument = single_expression_argument(node, "quasiquote")
+      return nil unless argument
+
+      value = parse_quoted_data(argument, depth: depth + 1)
+      value ? Forms::QuasiQuote.new(value: value) : nil
+    end
+
+    # An unquote/splice at depth ≥ 2: the content is quoted data at one
+    # level less and becomes a NestedUnquote/NestedSplice.
+    def parse_deep_escape(node, splice:, depth:)
+      return nil unless block_absent?(node, node.name)
+
+      argument = single_expression_argument(node, node.name)
+      return nil unless argument
+
+      value = parse_quoted_data(argument, depth: depth - 1)
+      return nil unless value
+
+      splice ? Forms::NestedSplice.new(value: value) : Forms::NestedUnquote.new(value: value)
+    end
+
+    def parse_quoted_list(node, depth:)
       return nil unless block_absent?(node, "list")
 
       elements = (node.arguments&.arguments || []).map do |element|
-        parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
+        parse_quoted_data(element, depth: depth, allow_splice: true)
       end
       elements.any?(&:nil?) ? nil : Forms::ListValue.new(elements: elements)
     end
 
-    def parse_quoted_cons(node, quasiquote:)
+    def parse_quoted_cons(node, depth:)
       return nil unless block_absent?(node, "cons")
 
       arguments = node.arguments&.arguments || []
@@ -1789,8 +1829,8 @@ module Ruri
         error(node.location, "cons requires exactly two arguments")
         return nil
       end
-      car = parse_quoted_data(arguments[0], quasiquote: quasiquote, allow_splice: false)
-      cdr = parse_quoted_data(arguments[1], quasiquote: quasiquote, allow_splice: false)
+      car = parse_quoted_data(arguments[0], depth: depth)
+      cdr = parse_quoted_data(arguments[1], depth: depth)
       return nil unless car && cdr
 
       Forms::ConsValue.new(car: car, cdr: cdr)

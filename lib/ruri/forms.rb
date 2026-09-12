@@ -97,6 +97,13 @@ module Ruri
     QuasiQuote = Data.define(:value)
     Unquote = Data.define(:value)
     Splice = Data.define(:value)
+    # Nested-template escapes: an `unquote`/`splice` written at template
+    # depth ≥ 2 escapes exactly one level, so its content is still quoted
+    # data (materialized when the inner template itself is evaluated),
+    # never a runtime expression. Unquote/Splice above are the depth-1
+    # escapes whose content is an ordinary expression.
+    NestedUnquote = Data.define(:value)
+    NestedSplice = Data.define(:value)
 
     # Ruby operators retain their evaluation shape while using Elisp runtime
     # semantics. +negated+ represents != without inventing another primitive.

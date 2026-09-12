@@ -350,6 +350,60 @@ class ParserTest < Minitest::Test
     end
   end
 
+  def test_parses_nested_quasiquotation_with_depth_tracking
+    command = parse(<<~RURI).first
+      command :nested_cmd do
+        interactive
+        template = quasiquote(list(:a, quasiquote(list(:b, unquote(:flag)))))
+      end
+    RURI
+
+    outer = command.body[1].value
+    inner = outer.value.elements[1]
+    assert_instance_of Ruri::Forms::QuasiQuote, inner
+    # `,flag` at depth 2 escapes one level: the content stays quoted data.
+    deep_escape = inner.value.elements[1]
+    assert_instance_of Ruri::Forms::NestedUnquote, deep_escape
+    assert_equal Ruri::Forms::Literal.new(kind: :symbol, value: "flag"),
+                 deep_escape.value
+  end
+
+  def test_parses_a_doubled_unquote_as_a_nested_escape_of_an_expression
+    command = parse(<<~RURI).first
+      command :doubled_cmd do
+        interactive
+        template = quasiquote(list(:c, quasiquote(list(:d, unquote(unquote(el.concat("x", "y")))))))
+      end
+    RURI
+
+    outer = command.body[1].value
+    inner = outer.value.elements[1]
+    deep_escape = inner.value.elements[1]
+    assert_instance_of Ruri::Forms::NestedUnquote, deep_escape
+    # The inner unquote is a depth-1 escape, so its content is an
+    # expression evaluated when the outer template materializes.
+    expression_escape = deep_escape.value
+    assert_instance_of Ruri::Forms::Unquote, expression_escape
+    assert_instance_of Ruri::Forms::Call, expression_escape.value
+  end
+
+  def test_rejects_deep_splice_outside_a_list_and_unquote_inside_quote
+    diags = diagnostics_of(<<~RURI)
+      command :bad_splice do
+        interactive
+        template = quasiquote(list(:a, quasiquote(splice(:b))))
+      end
+    RURI
+
+    assert_match(/splice must appear inside a quasiquoted list or vector/, diags[0].message)
+    assert_match(/quoted data supports only literals/, single_diagnostic(<<~RURI).message)
+      command :quoted_unquote do
+        interactive
+        pair = quote(unquote(:a))
+      end
+    RURI
+  end
+
   def test_rejects_top_level_splice_in_quasiquote
     diag = single_diagnostic(<<~RURI)
       command :data do

@@ -378,6 +378,10 @@ module Ruri
       case value
       when Forms::Unquote, Forms::Splice
         collect_expression_locals(value.value, names, shadowed)
+      when Forms::QuasiQuote
+        # Nested templates carry only data: their escapes bind or read
+        # nothing in the surrounding definition.
+        collect_template_locals(value.value, names, shadowed)
       when Forms::ListValue, Forms::Vector
         value.elements.each { |element| collect_template_locals(element, names, shadowed) }
       when Forms::ConsValue
@@ -663,10 +667,21 @@ module Ruri
         )
       when Forms::Vector
         Elisp.vector(*value.elements.map { |element| lower_quoted_data(element) })
+      when Forms::Quote
+        Elisp.quote(lower_quoted_data(value.value))
+      when Forms::QuasiQuote
+        Elisp.quasiquote(lower_quoted_data(value.value))
       when Forms::Unquote
         Elisp.unquote(lower_expression(value.value))
       when Forms::Splice
         Elisp.splice(lower_expression(value.value))
+      # Depth ≥ 2 escapes stay data: their content was parsed as quoted
+      # data, so the unquote/splice is emitted around it for the inner
+      # template's own evaluation.
+      when Forms::NestedUnquote
+        Elisp.unquote(lower_quoted_data(value.value))
+      when Forms::NestedSplice
+        Elisp.splice(lower_quoted_data(value.value))
       else
         raise ArgumentError, "cannot lower quoted Ruri data: #{value.class}"
       end

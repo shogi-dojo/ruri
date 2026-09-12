@@ -630,6 +630,35 @@
     (should (equal '((1) (1) 2 15) (ruri-test-place-ops)))
     (should (equal '(1) ruri-test-place-stack))))
 
+(ert-deftest ruri-test/nested-quasiquotation-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri nested qq " t))
+         (source (expand-file-name "nested-qq.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_flag, nil\n"
+              "\n"
+              "function :ruri_test_one_level do\n"
+              "  doc \"The ,escape stays data until the inner template runs.\"\n"
+              "  quasiquote(list(:a, quasiquote(list(:b, unquote(:ruri_test_flag)))))\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_two_level do\n"
+              "  doc \"The ,,escape evaluates when the outer template runs.\"\n"
+              "  quasiquote(list(:c, quasiquote(list(:d, unquote(unquote(el.concat(\"x\", \"y\")))))))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (let ((one (ruri-test-one-level))
+          (two (ruri-test-two-level)))
+      ;; The outer quasiquote keeps the inner one as unevaluated data
+      ;; (printed with the raw backquote symbol).
+      (should (equal "(a `(b ,ruri-test-flag))" (format "%S" one)))
+      (setq ruri-test-flag 5)
+      ;; Evaluating the inner template escapes the remaining level.
+      (should (equal '(b 5) (eval (cadr one) t)))
+      ;; A doubled unquote evaluates at the outer level and keeps one
+      ;; comma for the inner evaluation.
+      (should (equal "(c `(d ,\"xy\"))" (format "%S" two)))
+      (should (equal '(d "xy") (eval (cadr two) t))))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

@@ -527,4 +527,19 @@ class EmitterTest < Minitest::Test
     (push 2 hook-var)
     ELISP
   end
+
+  def test_emits_nested_quasiquotation
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :nested_cmd do
+        interactive
+        template = quasiquote(list(:a, quasiquote(list(:b, unquote(:flag)))))
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+    (setq ruri--local-template
+      `(a
+        `(b ,flag))))
+    ELISP
+  end
 end

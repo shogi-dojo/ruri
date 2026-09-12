@@ -515,6 +515,24 @@ class LowererTest < Minitest::Test
     assert_equal "hook-var", pop_form.items[1].name
   end
 
+  def test_lowers_nested_quasiquotation_with_depth_escapes
+    command = parse(<<~RURI).first
+      command :nested_cmd do
+        interactive
+        template = quasiquote(list(:a, quasiquote(list(:b, unquote(:flag)))))
+      end
+    RURI
+
+    quasi = Ruri::Lowerer.lower([command]).first.items[4].items[2].items[2]
+    assert_instance_of Ruri::Elisp::QuasiQuote, quasi
+    inner_quasi = quasi.value.items[1]
+    assert_instance_of Ruri::Elisp::QuasiQuote, inner_quasi
+    deep_unquote = inner_quasi.value.items[1]
+    assert_instance_of Ruri::Elisp::Unquote, deep_unquote
+    # The escaped content is the raw data symbol, not a quoted literal.
+    assert_equal "flag", deep_unquote.value.name
+  end
+
   def test_return_wraps_the_defun_body_in_a_catch
     function = parse(<<~RURI).first
       function :early do
