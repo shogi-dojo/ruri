@@ -162,7 +162,10 @@ end')
     # Comments are stripped first because docs legitimately mention eval.
     lib = File.expand_path("../lib", __dir__)
     Dir.glob(File.join(lib, "**", "*.rb")).sort.each do |file|
-      code = File.read(file).gsub(/#.*$/, "")
+      # Read as UTF-8 explicitly, like lib/ruri/cli.rb does: the default
+      # external encoding follows the locale, so an unset LANG would make
+      # this guard raise on a non-ASCII comment instead of checking it.
+      code = File.read(file, encoding: "UTF-8").gsub(/#.*$/, "")
       [/\beval\b/, /\binstance_eval\b/, /\bclass_eval\b/, /\bmodule_eval\b/,
        /\b__send__\b/, /\bsend\b/, /\bpublic_send\b/, /\bmethod_missing\b/].each do |pattern|
         refute_match pattern, code, "#{file} must not use #{pattern.inspect}"
