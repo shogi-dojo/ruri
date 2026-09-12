@@ -107,6 +107,7 @@ module Ruri
         if opening == "\"" && interpolated_slice?(node)
           return [false, error(node.location, "string interpolation is not supported in v0")]
         end
+
         [true, node.unescaped]
       when Prism::InterpolatedStringNode
         [false, error(node.location,
@@ -127,6 +128,7 @@ module Ruri
         if opening == ":\"" && interpolated_slice?(node)
           return [false, error(node.location, "symbol interpolation is not supported in v0")]
         end
+
         [true, node.unescaped]
       when Prism::InterpolatedSymbolNode
         [false, error(node.location, "symbol interpolation is not supported in v0")]
@@ -205,6 +207,7 @@ module Ruri
       end
       definition_name = parse_definition_name(args[0], :command)
       return unless definition_name
+
       source_name, lisp_name = definition_name
 
       body = with_local_scope(node.block) { parse_command_body(node.block) }
@@ -232,10 +235,12 @@ module Ruri
       end
       definition_name = parse_definition_name(args[0], :function)
       return unless definition_name
+
       source_name, lisp_name = definition_name
 
       parameters = parse_required_block_parameters(node.block, "function")
       return unless parameters
+
       generated_parameters = parameters.map { |name| generated_local_name(name) }
       statements = node.block.body&.body || []
       docstring = nil
@@ -297,12 +302,15 @@ module Ruri
       min_args = value_required ? 2 : 1
       unless positional.length.between?(min_args, 3)
         range = value_required ? "two or three" : "one to three"
-        error(node.location, "#{kind} requires #{range} arguments: :name#{value_required ? '' : ' [, value]'}, and an optional docstring")
+        error(node.location,
+              "#{kind} requires #{range} arguments: :name" \
+              "#{value_required ? '' : ' [, value]'}, and an optional docstring")
         return
       end
 
       ok, source_name = extract_symbol(positional[0])
       return unless ok
+
       unless source_name.match?(NAME_RE) && source_name != "t"
         error(positional[0].location,
               "invalid #{kind} name `#{source_name}`; must match [a-z][a-z0-9_]*")
@@ -369,6 +377,7 @@ module Ruri
 
       ok, source_name = extract_symbol(positional[0])
       return unless ok
+
       unless source_name.match?(NAME_RE) && source_name != "t"
         error(positional[0].location,
               "invalid custom name `#{source_name}`; must match [a-z][a-z0-9_]*")
@@ -438,13 +447,20 @@ module Ruri
 
       ok, source_name = extract_symbol(positional[0])
       return unless ok
+
       unless source_name.match?(NAME_RE) && source_name != "t"
         error(positional[0].location,
               "invalid #{kind} name `#{source_name}`; must match [a-z][a-z0-9_]*")
         return
       end
 
-      @definitions << (kind == :require ? Forms::Require.new(source_name: source_name, name: source_name.tr("_", "-")) : Forms::Provide.new(source_name: source_name, name: source_name.tr("_", "-")))
+      @definitions << (kind == :require ? Forms::Require.new(source_name: source_name,
+                                                             name: source_name.tr(
+                                                               "_", "-"
+                                                             )) : Forms::Provide.new(source_name: source_name,
+                                                                                     name: source_name.tr(
+                                                                                       "_", "-"
+                                                                                     )))
     end
 
     # Splits a call's arguments into positional nodes and keyword
@@ -765,6 +781,7 @@ module Ruri
 
       parameters = parse_required_block_parameters(node.block, "each")
       return nil unless parameters
+
       unless parameters.one?
         error(node.block.location, "each requires exactly one block parameter")
         return nil
@@ -911,6 +928,7 @@ module Ruri
 
       ok, source_name = extract_symbol(positional[0])
       return unless ok
+
       unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
         error(positional[0].location,
               "invalid keyword `#{source_name}`; must match [a-z][a-z0-9_]*")
@@ -945,6 +963,7 @@ module Ruri
 
       ok, source_name = extract_symbol(positional[0])
       return unless ok
+
       unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
         error(positional[0].location,
               "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
@@ -986,6 +1005,7 @@ module Ruri
         end
         ok, source_name = extract_symbol(name_node)
         return nil unless ok
+
         unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
           error(name_node.location,
                 "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
@@ -1130,14 +1150,14 @@ module Ruri
     end
 
     def parse_list_value(node)
-      return nil unless reject_expression_block(node, "list")
+      return nil unless block_absent?(node, "list")
 
       elements = (node.arguments&.arguments || []).map { |item| parse_expression(item) }
       elements.any?(&:nil?) ? nil : Forms::ListValue.new(elements: elements)
     end
 
     def parse_cons_value(node)
-      return nil unless reject_expression_block(node, "cons")
+      return nil unless block_absent?(node, "cons")
 
       arguments = node.arguments&.arguments || []
       unless arguments.length == 2
@@ -1151,7 +1171,7 @@ module Ruri
     end
 
     def parse_quote(node)
-      return nil unless reject_expression_block(node, "quote")
+      return nil unless block_absent?(node, "quote")
 
       argument = single_expression_argument(node, "quote")
       return nil unless argument
@@ -1161,7 +1181,7 @@ module Ruri
     end
 
     def parse_quasiquote(node)
-      return nil unless reject_expression_block(node, "quasiquote")
+      return nil unless block_absent?(node, "quasiquote")
 
       argument = single_expression_argument(node, "quasiquote")
       return nil unless argument
@@ -1170,7 +1190,7 @@ module Ruri
       value ? Forms::QuasiQuote.new(value: value) : nil
     end
 
-    def reject_expression_block(node, name)
+    def block_absent?(node, name)
       return true unless node.block
 
       error(node.location, "#{name} does not take a block")
@@ -1206,6 +1226,7 @@ module Ruri
         if quasiquote && unqualified_call?(node, :unquote)
           return parse_template_escape(node, splice: false)
         end
+
         if quasiquote && unqualified_call?(node, :splice)
           unless allow_splice
             return error(node.location,
@@ -1223,7 +1244,7 @@ module Ruri
     end
 
     def parse_quoted_list(node, quasiquote:)
-      return nil unless reject_expression_block(node, "list")
+      return nil unless block_absent?(node, "list")
 
       elements = (node.arguments&.arguments || []).map do |element|
         parse_quoted_data(element, quasiquote: quasiquote, allow_splice: true)
@@ -1232,7 +1253,7 @@ module Ruri
     end
 
     def parse_quoted_cons(node, quasiquote:)
-      return nil unless reject_expression_block(node, "cons")
+      return nil unless block_absent?(node, "cons")
 
       arguments = node.arguments&.arguments || []
       unless arguments.length == 2
@@ -1247,7 +1268,7 @@ module Ruri
     end
 
     def parse_template_escape(node, splice:)
-      return nil unless reject_expression_block(node, node.name)
+      return nil unless block_absent?(node, node.name)
 
       argument = single_expression_argument(node, node.name)
       return nil unless argument

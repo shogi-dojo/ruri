@@ -21,6 +21,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends emacs-nox
 
+      - name: RuboCop
+        run: bundle exec rubocop --format github
+
       - name: Ruby compiler tests
         run: bundle exec ruby -Itest test/compiler_test.rb
 

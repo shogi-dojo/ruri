@@ -52,6 +52,7 @@ module Ruri
         return ["#{padding}#{render_sequence(node)}"] if node.is_a?(InlineSequence)
         return render_collection(node.items, indent, "[", "]") if node.is_a?(Vector)
         return render_dotted_pair(node, indent) if node.is_a?(DottedPair)
+
         if prefix_node?(node) && !inline?(node)
           lines = render(node.value, indent)
           lines[0] = lines[0].sub(padding, "#{padding}#{prefix_for(node)}")

@@ -132,8 +132,8 @@ class EmitterTest < Minitest::Test
     output = Ruri.compile(HELLO_SOURCE, path: path)
 
     assert_includes output, "from safe.ruri\\n(error \"injected\")\\t. DO NOT EDIT."
-    assert_equal 1, output.lines.count { |line| line.include?("injected") }
-    refute output.lines.any? { |line| line.start_with?("(error") }
+    assert_equal(1, output.lines.count { |line| line.include?("injected") })
+    refute(output.lines.any? { |line| line.start_with?("(error") })
   end
 
   def test_emits_generic_elisp_calls_and_literals

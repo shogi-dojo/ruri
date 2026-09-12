@@ -1054,4 +1054,3 @@ end')
     assert_match(/doc is only allowed once, as the first statement/, diag.message)
   end
 end
-

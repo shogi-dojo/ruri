@@ -69,7 +69,10 @@ class PackageFormsTest < Minitest::Test
       variable :count_down, 10, "Current count."
     RURI
 
-    assert_equal %w[function variable], definitions.map { |d| d.class.name.sub("Ruri::Forms::", "").sub("Definition", "").downcase }
+    kinds = definitions.map do |d|
+      d.class.name.sub("Ruri::Forms::", "").sub("Definition", "").downcase
+    end
+    assert_equal(%w[function variable], kinds)
   end
 
   def test_rejects_duplicate_variable_names_across_kinds
@@ -255,7 +258,6 @@ class PackageFormsTest < Minitest::Test
       assert_match(/is only allowed at the top level of a \.ruri file/, diag.message)
     end
   end
-
 
   def test_variable_local_emits_defvar_local
     output = compile_source(<<~'RURI')
