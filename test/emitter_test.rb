@@ -282,4 +282,21 @@ class EmitterTest < Minitest::Test
     assert_includes output, "(let (ruri--local-prefix)"
     assert_includes output, '(concat ruri--local-prefix ruri--local-value ">")'
   end
+
+  def test_docstring_renders_on_its_own_line
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :greet_cmd do
+        doc "Greet the world."
+        interactive
+        insert("hi")
+      end
+    RURI
+
+    assert_includes output, <<~ELISP
+      (defun greet-cmd ()
+        "Greet the world."
+        (interactive)
+        (insert "hi"))
+    ELISP
+  end
 end

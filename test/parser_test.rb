@@ -967,4 +967,91 @@ end')
     assert_equal [], parse("")
     assert_equal [], parse("# only a comment\n")
   end
+
+  def test_parses_docstring_in_command_body
+    commands = parse(<<~RURI)
+      command :greet_cmd do
+        doc "Greet the world."
+        interactive
+        insert("hi")
+      end
+    RURI
+
+    assert_instance_of Ruri::Forms::Docstring, commands.first.body[0]
+    assert_equal "Greet the world.", commands.first.body[0].text
+    assert_instance_of Ruri::Forms::Interactive, commands.first.body[1]
+  end
+
+  def test_parses_docstring_in_function_body
+    functions = parse(<<~RURI)
+      function :double_it do |number|
+        doc "Double NUMBER."
+        number * 2
+      end
+    RURI
+
+    assert_equal "Double NUMBER.", functions.first.body[0].text
+  end
+
+  def test_rejects_docstring_not_first
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        doc "Late."
+      end
+    RURI
+
+    assert_equal 3, diag.line
+    assert_match(/doc is only allowed once, as the first statement/, diag.message)
+  end
+
+  def test_rejects_second_docstring
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        doc "First."
+        doc "Second."
+        interactive
+      end
+    RURI
+
+    assert_equal 2, diags.size
+    assert_equal 3, diags.first.line
+    assert_match(/doc is only allowed once/, diags.first.message)
+  end
+
+  def test_rejects_docstring_with_non_string_argument
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        doc(:not_a_string)
+        interactive
+      end
+    RURI
+
+    assert_match(/literal string argument required/, diag.message)
+  end
+
+  def test_rejects_command_without_interactive_after_docstring
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        doc "Doc only."
+        insert("x")
+      end
+    RURI
+
+    assert_match(/command body must start with interactive/, diag.message)
+  end
+
+  def test_rejects_docstring_outside_definitions
+    diag = single_diagnostic(<<~RURI)
+      command :a do
+        interactive
+        with_current_buffer("*scratch*") do
+          doc "Nested."
+        end
+      end
+    RURI
+
+    assert_match(/doc is only allowed once, as the first statement/, diag.message)
+  end
 end
+

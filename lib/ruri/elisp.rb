@@ -11,6 +11,8 @@ module Ruri
     String = Data.define(:value)
     Integer = Data.define(:value)
     Float = Data.define(:value)
+    # A documentation string that always renders on its own line.
+    Docstring = Data.define(:value)
     List = Data.define(:items)
     InlineList = Data.define(:items)
     Vector = Data.define(:items)
@@ -33,6 +35,12 @@ module Ruri
 
     def string(value)
       String.new(value: value.to_s.freeze)
+    end
+
+    def docstring(string)
+      raise ArgumentError, "docstrings require an Elisp string" unless string.is_a?(String)
+
+      Docstring.new(value: string)
     end
 
     def integer(value)
@@ -98,8 +106,8 @@ module Ruri
     end
 
     def node?(value)
-      [Symbol, String, Integer, Float, List, InlineList, Vector, DottedPair,
-       Quote, QuasiQuote, Unquote, Splice].any? do |type|
+      [Symbol, String, Integer, Float, Docstring, List, InlineList, Vector,
+       DottedPair, Quote, QuasiQuote, Unquote, Splice].any? do |type|
         value.is_a?(type)
       end
     end

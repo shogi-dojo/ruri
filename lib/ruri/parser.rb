@@ -230,9 +230,16 @@ module Ruri
       parameters = parse_required_block_parameters(node.block, "function")
       return unless parameters
       generated_parameters = parameters.map { |name| generated_local_name(name) }
-      body = with_local_scope(node.block, parameters) do
-        parse_value_body(node.block.body&.body || [])
+      statements = node.block.body&.body || []
+      docstring = nil
+      if unqualified_call?(statements.first, :doc)
+        docstring = parse_doc_statement(statements.first)
+        statements = statements[1..]
       end
+      body = with_local_scope(node.block, parameters) do
+        parse_value_body(statements)
+      end
+      body = [docstring] + body if docstring
       @definitions << Forms::FunctionDefinition.new(
         source_name: source_name,
         name: lisp_name,
@@ -313,6 +320,7 @@ module Ruri
       forms = []
       interactive_seen = false
       interactive_problem_reported = false
+      docstring_seen = false
       statements.each_with_index do |stmt, index|
         if stmt.is_a?(Prism::LocalVariableWriteNode) ||
            stmt.is_a?(Prism::IfNode) || stmt.is_a?(Prism::UnlessNode) ||
@@ -336,8 +344,17 @@ module Ruri
           next
         end
         case stmt.name
+        when :doc
+          if index.zero? && !docstring_seen
+            docstring_seen = true
+            if (form = parse_doc_statement(stmt))
+              forms << form
+            end
+          else
+            error(stmt.location, "doc is only allowed once, as the first statement of a command or function body")
+          end
         when :interactive
-          if index.zero? && !interactive_seen
+          if index <= (docstring_seen ? 1 : 0) && !interactive_seen
             interactive_seen = true
             if stmt.arguments
               interactive_problem_reported = true
@@ -350,7 +367,7 @@ module Ruri
             end
           else
             interactive_problem_reported = true
-            error(stmt.location, "interactive must appear exactly once, as the first statement of the command body")
+            error(stmt.location, "interactive must appear exactly once, directly after the optional docstring")
           end
         when :command
           error(stmt.location, "nested command definitions are not supported")
@@ -430,6 +447,27 @@ module Ruri
       return nil unless ok
 
       Forms::Insert.new(text: text)
+    end
+
+    # The optional first `doc "..."` statement of a command or function
+    # body. Returns nil when the node is not a doc statement; records a
+    # diagnostic when it is malformed.
+    def parse_doc_statement(node)
+      return nil unless unqualified_call?(node, :doc)
+
+      if node.block
+        error(node.location, "doc does not take a block")
+        return nil
+      end
+      args = node.arguments&.arguments || []
+      if args.length != 1
+        error(node.location, "doc requires exactly one literal string argument")
+        return nil
+      end
+      ok, text = extract_string(args[0])
+      return nil unless ok
+
+      Forms::Docstring.new(text: text)
     end
 
     def parse_structured_statement(node)
@@ -958,7 +996,7 @@ module Ruri
       return true unless node.is_a?(Prism::CallNode)
       return false if node.name == :each && node.receiver
       return false if node.receiver.nil? &&
-                      %i[interactive command with_current_buffer insert].include?(node.name)
+                      %i[interactive command with_current_buffer insert doc].include?(node.name)
       return false if node.receiver.nil? && node.name == :function && node.block
 
       true
@@ -989,6 +1027,8 @@ module Ruri
           next
         end
         case stmt.name
+        when :doc
+          error(stmt.location, "doc is only allowed once, as the first statement of a command or function body")
         when :interactive
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
         when :command

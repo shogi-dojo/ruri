@@ -15,6 +15,10 @@ module Ruri
     # The required first statement of every command body.
     Interactive = Data.define
 
+    # Documentation string. Only valid as the first statement of a command
+    # or function body; lowers to a dedicated Elisp docstring node.
+    Docstring = Data.define(:text)
+
     # Buffer-scoped block: body statements run inside the named buffer.
     WithCurrentBuffer = Data.define(:buffer, :body)
 

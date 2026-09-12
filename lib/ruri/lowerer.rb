@@ -23,43 +23,58 @@ module Ruri
     private
 
     def lower_command(command)
-      body = command.body.map { |statement| lower_statement(statement) }
-      locals = collect_locals(command.body)
-      unless locals.empty?
-        interactive, *statements = body
-        scope = Elisp.list(
-          Elisp.symbol("let"),
-          Elisp.inline_list(*locals.map { |name| Elisp.symbol(name) }),
-          *statements
-        )
-        body = [interactive, scope]
-      end
+      doc_form, statements = partition_docstring(command.body)
+      interactive_form, *rest = statements
+      lowered_rest = rest.map { |statement| lower_statement(statement) }
+      locals = collect_locals(rest)
+      lowered_rest = wrap_locals(locals, lowered_rest) unless locals.empty?
 
       Elisp.list(
         Elisp.symbol("defun"),
         Elisp.symbol(command.name),
         Elisp.inline_list,
-        *body
+        *doc_form,
+        lower_statement(interactive_form),
+        *lowered_rest
       )
     end
 
     def lower_function_definition(function)
-      body = function.body.map { |statement| lower_statement(statement) }
-      locals = collect_locals(function.body, [], function.parameters)
-      unless locals.empty?
-        body = [Elisp.list(
-          Elisp.symbol("let"),
-          Elisp.inline_list(*locals.map { |name| Elisp.symbol(name) }),
-          *body
-        )]
-      end
+      doc_form, statements = partition_docstring(function.body)
+      lowered = statements.map { |statement| lower_statement(statement) }
+      locals = collect_locals(statements, [], function.parameters)
+      lowered = wrap_locals(locals, lowered) unless locals.empty?
 
       Elisp.list(
         Elisp.symbol("defun"),
         Elisp.symbol(function.name),
         Elisp.inline_list(*function.parameters.map { |name| Elisp.symbol(name) }),
-        *body
+        *doc_form,
+        *lowered
       )
+    end
+
+    # The parser places at most one Forms::Docstring at the head of a
+    # definition body. It lowers to a dedicated node and stays outside any
+    # lexical `let`, matching conventional Elisp layout.
+    def partition_docstring(statements)
+      if statements.first.is_a?(Forms::Docstring)
+        [lower_docstring(statements.first), statements[1..]]
+      else
+        [[], statements]
+      end
+    end
+
+    def wrap_locals(locals, forms)
+      [Elisp.list(
+        Elisp.symbol("let"),
+        Elisp.inline_list(*locals.map { |name| Elisp.symbol(name) }),
+        *forms
+      )]
+    end
+
+    def lower_docstring(docstring)
+      Elisp.docstring(Elisp.string(docstring.text))
     end
 
     def collect_locals(statements, names = [], shadowed = [])
@@ -136,6 +151,8 @@ module Ruri
       case statement
       when Forms::Interactive
         Elisp.list(Elisp.symbol("interactive"))
+      when Forms::Docstring
+        lower_docstring(statement)
       when Forms::Insert
         Elisp.list(Elisp.symbol("insert"), Elisp.string(statement.text))
       when Forms::WithCurrentBuffer

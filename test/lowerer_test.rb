@@ -255,4 +255,38 @@ class LowererTest < Minitest::Test
     assert_equal ["ruri--local-prefix"], scope.items[1].items.map(&:name)
     assert_equal "concat", scope.items.last.items.first.name
   end
+
+  def test_lowers_docstring_outside_the_locals_let
+    command = parse(<<~RURI).first
+      command :greet_cmd do
+        doc "Greet the world."
+        interactive
+        message = "hi"
+        el.message(message)
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([command]).first
+    assert_instance_of Ruri::Elisp::Docstring, form.items[3]
+    assert_equal "Greet the world.", form.items[3].value.value
+    assert_equal "interactive", form.items[4].items.first.name
+    scope = form.items[5]
+    assert_equal "let", scope.items.first.name
+    assert_equal ["ruri--local-message"], scope.items[1].items.map(&:name)
+  end
+
+  def test_lowers_function_docstring_outside_the_locals_let
+    function = parse(<<~RURI).first
+      function :double_it do |number|
+        doc "Double NUMBER."
+        result = number * 2
+        result
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    assert_instance_of Ruri::Elisp::Docstring, form.items[3]
+    scope = form.items[4]
+    assert_equal "let", scope.items.first.name
+  end
 end

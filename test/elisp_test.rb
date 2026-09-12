@@ -110,4 +110,26 @@ class ElispTest < Minitest::Test
         ,@tail)
     ELISP
   end
+
+  def test_docstring_node_renders_on_its_own_line
+    form = Ruri::Elisp.list(
+      Ruri::Elisp.symbol("defun"),
+      Ruri::Elisp.symbol("foo"),
+      Ruri::Elisp.inline_list,
+      Ruri::Elisp.docstring(Ruri::Elisp.string("Does things.")),
+      Ruri::Elisp.list(Ruri::Elisp.symbol("bar"))
+    )
+
+    assert_equal <<~ELISP.chomp, Ruri::Elisp::Printer.print(form)
+      (defun foo ()
+        "Does things."
+        (bar))
+    ELISP
+  end
+
+  def test_docstrings_require_an_elisp_string
+    error = assert_raises(ArgumentError) { Ruri::Elisp.docstring("raw") }
+
+    assert_match(/docstrings require an Elisp string/, error.message)
+  end
 end

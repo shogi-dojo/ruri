@@ -56,6 +56,7 @@ module Ruri
           lines[0] = lines[0].sub(padding, "#{padding}#{prefix_for(node)}")
           return lines
         end
+        return ["#{padding}#{render_inline(node.value)}"] if node.is_a?(Docstring)
 
         ["#{padding}#{render_inline(node)}"]
       end
@@ -101,6 +102,8 @@ module Ruri
         case node
         when Symbol, String, Integer, Float
           true
+        when Docstring
+          false
         when Quote, QuasiQuote, Unquote, Splice
           inline?(node.value)
         when InlineList
