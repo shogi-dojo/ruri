@@ -284,5 +284,44 @@
       (call-interactively #'function-cmd)
       (should (equal "120/<x>/24" (buffer-string))))))
 
-(provide 'ruri-test)
+(ert-deftest ruri-test/package-forms-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri package " t))
+         (source (expand-file-name "package.ruri" dir)))
+    (with-temp-file source
+      (insert "require :subr_x\n"
+              "\n"
+              "variable :ruri_test_counter, 7, \"Counter for tests.\"\n"
+              "\n"
+              "custom :ruri_test_style, :plain, \"Style setting.\", type: :symbol\n"
+              "\n"
+              "command :ruri_test_greet_cmd do\n"
+              "  doc \"Greet using the test counter.\"\n"
+              "  interactive\n"
+              "  el.insert(el.format(\"count=%d style=%S folded=%S\",\n"
+              "                      var(:ruri_test_counter),\n"
+              "                      var(:ruri_test_style),\n"
+              "                      var(:case_fold_search)))\n"
+              "end\n"
+              "\n"
+              "function :ruri_test_double do |n|\n"
+              "  doc \"Double N.\"\n"
+              "  n * 2\n"
+              "end\n"
+              "\n"
+              "provide :ruri_test_pack\n"))
+    (ruri-load-file source)
+    (should (featurep (quote ruri-test-pack)))
+    (should (= 7 (default-value (quote ruri-test-counter))))
+    (should (eq (quote plain) (default-value (quote ruri-test-style))))
+    (should (eq (quote symbol) (get (quote ruri-test-style) (quote custom-type))))
+    (should (commandp (quote ruri-test-greet-cmd)))
+    (with-temp-buffer
+      (call-interactively (quote ruri-test-greet-cmd))
+      (should (string-prefix-p "count=7 style=plain" (buffer-string))))
+    (should (= 84 (ruri-test-double 42)))
+    (should (equal "Greet using the test counter."
+                   (documentation (quote ruri-test-greet-cmd))))
+    (should (equal "Double N." (documentation (quote ruri-test-double))))))
+
+(provide (quote ruri-test))
 ;;; ruri-test.el ends here
