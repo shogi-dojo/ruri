@@ -408,4 +408,23 @@ class LowererTest < Minitest::Test
     assert_equal "message", unwind.items[1].items.first.name
     assert_equal "cleanup", unwind.items[2].items[1].value
   end
+
+  def test_lowers_catch_and_throw_with_quoted_tags
+    function = parse(<<~RURI).first
+      function :seek do
+        catch(:found_value) do
+          throw :found_value, 7
+        end
+      end
+    RURI
+
+    form = Ruri::Lowerer.lower([function]).first
+    catch_node = form.items[3]
+    assert_equal "catch", catch_node.items.first.name
+    assert_equal "found-value", catch_node.items[1].value.name
+    throw_node = catch_node.items[2]
+    assert_equal "throw", throw_node.items.first.name
+    assert_equal "found-value", throw_node.items[1].value.name
+    assert_equal 7, throw_node.items[2].value
+  end
 end

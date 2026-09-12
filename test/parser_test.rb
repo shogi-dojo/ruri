@@ -968,6 +968,44 @@ end')
     assert_equal 1, rescue_form.else_body.length
   end
 
+  def test_parses_catch_and_throw_with_symbol_tags
+    function = parse(<<~RURI).first
+      function :seek do |limit|
+        found = catch(:found_value) do
+          throw :found_value, limit
+        end
+        el.message("%S", found)
+      end
+    RURI
+
+    catch_form = function.body.first.value
+    assert_instance_of Ruri::Forms::Catch, catch_form
+    assert_equal "found-value", catch_form.tag
+    throw_form = catch_form.body.first.expression
+    assert_instance_of Ruri::Forms::Throw, throw_form
+    assert_equal "found-value", throw_form.tag
+    assert_equal "ruri--local-limit", throw_form.value.name
+  end
+
+  def test_rejects_malformed_catch_and_throw
+    diags = diagnostics_of(<<~RURI)
+      function :bad do
+        catch(:a)
+        catch
+        throw :a
+        throw :a, 1, 2
+        throw "text", 1
+      end
+    RURI
+
+    assert_equal 5, diags.size
+    assert_match(/catch requires a do\.\.\.end block/, diags[0].message)
+    assert_match(/catch requires a do\.\.\.end block/, diags[1].message)
+    assert_match(/throw requires a tag symbol and a value expression/, diags[2].message)
+    assert_match(/throw requires a tag symbol and a value expression/, diags[3].message)
+    assert_match(/literal symbol argument required/, diags[4].message)
+  end
+
   def test_rescue_variable_is_readable_after_the_block
     function = parse(<<~RURI).first
       function :leaky do

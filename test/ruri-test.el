@@ -444,6 +444,26 @@
     (should (equal "math" (ruri-test-rescued 1 0)))
     (should (= 2 ruri-test-cleanups))))
 
+(ert-deftest ruri-test/catch-and-throw-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri catch " t))
+         (source (expand-file-name "catch.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_seek do |limit|\n"
+              "  doc \"First item whose double reaches LIMIT, or none.\"\n"
+              "  catch(:found) do\n"
+              "    list(1, 2, 3, 4).each do |item|\n"
+              "      if item * 2 >= limit\n"
+              "        throw :found, item\n"
+              "      end\n"
+              "    end\n"
+              "    :none\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The thrown value crosses the tag and becomes the catch value.
+    (should (= 2 (ruri-test-seek 4)))
+    (should (eq 'none (ruri-test-seek 100)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

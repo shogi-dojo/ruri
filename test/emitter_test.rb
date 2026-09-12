@@ -401,4 +401,20 @@ class EmitterTest < Minitest::Test
     (message "cleanup"))
     ELISP
   end
+
+  def test_emits_catch_and_throw
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :seek do
+        doc "Find or bail out."
+        catch(:found_value) do
+          throw :found_value, 7
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (catch 'found-value
+    (throw 'found-value 7))
+    ELISP
+  end
 end

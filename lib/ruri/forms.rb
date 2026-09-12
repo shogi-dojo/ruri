@@ -122,6 +122,12 @@ module Ruri
     # forms (a lone Rescue form when both clauses are present); the
     # unwound value is the body's value, never the cleanup's.
     Ensure = Data.define(:body, :ensure_body)
+
+    # `catch(:tag) do … end` and `throw :tag, value`. The tag is an
+    # unevaluated Elisp symbol that thrown values cross, so both are typed
+    # forms rather than el.* calls (which would quote the tag wrongly).
+    Catch = Data.define(:tag, :body)
+    Throw = Data.define(:tag, :value)
     # Preserves an expression used for its value as a body form.
     ExpressionStatement = Data.define(:expression)
   end

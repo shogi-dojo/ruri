@@ -189,6 +189,10 @@ module Ruri
         when Forms::Ensure
           collect_locals(statement.body, names, shadowed)
           collect_locals(statement.ensure_body, names, shadowed)
+        when Forms::Catch
+          collect_locals(statement.body, names, shadowed)
+        when Forms::Throw
+          collect_expression_locals(statement.value, names, shadowed)
         when Forms::Call
           collect_expression_locals(statement, names, shadowed)
         when Forms::ExpressionStatement
@@ -234,6 +238,10 @@ module Ruri
       when Forms::Ensure
         collect_locals(expression.body, names, shadowed)
         collect_locals(expression.ensure_body, names, shadowed)
+      when Forms::Catch
+        collect_locals(expression.body, names, shadowed)
+      when Forms::Throw
+        collect_expression_locals(expression.value, names, shadowed)
       end
     end
 
@@ -291,6 +299,10 @@ module Ruri
         lower_rescue(statement)
       when Forms::Ensure
         lower_ensure(statement)
+      when Forms::Catch
+        lower_catch(statement)
+      when Forms::Throw
+        lower_throw(statement)
       when Forms::ExpressionStatement
         lower_expression(statement.expression)
       when Forms::Assign
@@ -367,9 +379,31 @@ module Ruri
         lower_rescue(expression)
       when Forms::Ensure
         lower_ensure(expression)
+      when Forms::Catch
+        lower_catch(expression)
+      when Forms::Throw
+        lower_throw(expression)
       else
         raise ArgumentError, "cannot lower Ruri expression: #{expression.class}"
       end
+    end
+
+    # (catch 'tag FORMS...): the tag is a quoted symbol in an unevaluated
+    # position; the result is the thrown value or the last body form.
+    def lower_catch(catch_form)
+      Elisp.list(
+        Elisp.symbol("catch"),
+        Elisp.quote(Elisp.symbol(catch_form.tag)),
+        *catch_form.body.map { |statement| lower_statement(statement) }
+      )
+    end
+
+    def lower_throw(throw_form)
+      Elisp.list(
+        Elisp.symbol("throw"),
+        Elisp.quote(Elisp.symbol(throw_form.tag)),
+        lower_expression(throw_form.value)
+      )
     end
 
     # (condition-case VAR BODY CLAUSES...) where each clause is

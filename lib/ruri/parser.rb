@@ -610,6 +610,14 @@ module Ruri
           if (form = parse_assign_statement(stmt))
             forms << form
           end
+        when :catch
+          if (form = parse_catch(stmt))
+            forms << form
+          end
+        when :throw
+          if (form = parse_throw(stmt))
+            forms << form
+          end
         else
           unsupported(stmt)
         end
@@ -800,6 +808,80 @@ module Ruri
       rescue_form
     end
 
+    # `catch(:tag) do … end` and `throw :tag, value` lower to Elisp catch
+    # and throw with a quoted, unevaluated tag symbol. The tag position is
+    # not an evaluated expression, so both are typed forms.
+    def parse_throw(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `throw` with explicit receiver")
+        return nil
+      end
+      if node.block
+        error(node.location, "throw does not take a block")
+        return nil
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "throw does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 2
+        error(node.location, "throw requires a tag symbol and a value expression")
+        return nil
+      end
+
+      ok, tag = exit_tag_name(positional[0], "throw")
+      return nil unless ok
+
+      value = parse_expression(positional[1])
+      return nil unless value
+
+      Forms::Throw.new(tag: tag, value: value)
+    end
+
+    # Shared tag handling for catch/throw: one literal symbol in the
+    # unevaluated tag position, normalized from snake_case. Returns
+    # [ok, normalized_name].
+    def exit_tag_name(node, construct)
+      ok, source_name = extract_symbol(node)
+      return [false, nil] unless ok
+
+      unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+        error(node.location,
+              "invalid #{construct} tag `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return [false, nil]
+      end
+      [true, source_name.tr("_", "-")]
+    end
+
+    def parse_catch(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `catch` with explicit receiver")
+        return nil
+      end
+      unless node.block
+        error(node.location, "catch requires a do...end block")
+        return nil
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "catch does not accept keyword arguments")
+        return nil
+      end
+      unless positional.length == 1
+        error(node.location, "catch requires exactly one literal symbol tag")
+        return nil
+      end
+
+      ok, tag = exit_tag_name(positional[0], "catch")
+      return nil unless ok
+
+      body = parse_value_body(node.block.body&.body || [])
+      Forms::Catch.new(tag: tag, body: body)
+    end
+
     def parse_structured_statement(node)
       case node
       when Prism::LocalVariableWriteNode
@@ -987,6 +1069,8 @@ module Ruri
         return parse_quasiquote(node) if unqualified_call?(node, :quasiquote)
         return parse_var_read(node) if unqualified_call?(node, :var)
         return parse_keyword(node) if unqualified_call?(node, :keyword)
+        return parse_catch(node) if unqualified_call?(node, :catch)
+        return parse_throw(node) if unqualified_call?(node, :throw)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -1534,6 +1618,14 @@ module Ruri
           end
         when :assign
           if (form = parse_assign_statement(stmt))
+            forms << form
+          end
+        when :catch
+          if (form = parse_catch(stmt))
+            forms << form
+          end
+        when :throw
+          if (form = parse_throw(stmt))
             forms << form
           end
         else
