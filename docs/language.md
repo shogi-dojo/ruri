@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.8
+# Ruri language contract — version 0.9
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.8: every construct below is supported,
+is the exact scope of version 0.9: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -29,7 +29,12 @@ everything else is rejected with a source position.
 | --- | --- |
 | `command :hello_buffer do … end` | Top-level command definition; emits `(defun hello-buffer () …)`. Exactly one literal symbol argument, no parameters, no receiver, no block parameters, no nested commands. Multiple distinct commands per file are allowed. |
 | `function :decorate do \|value\| … end` | Top-level noninteractive function definition; emits `(defun decorate (ruri--local-value) …)`. Zero or more required positional parameters are accepted. The final expression is the return value. |
-| `interactive` | Emits `(interactive)`. Exactly once and first in each command body; no arguments, no block. |
+| `doc "…"` | Documentation string. Exactly once, as the first statement of a `command` or `function` body; emits a defun docstring on its own line. `interactive`, when present, follows it. |
+| `variable :name [, value] [, "doc"]` | Emits `(defvar name [value] ["doc"])`. The value is any supported expression and may be omitted; the docstring is an optional literal string. |
+| `constant :name, value [, "doc"]` | Emits `(defconst name value ["doc"])`. The value is required. |
+| `custom :name, value [, "doc"] [, type: expression]` | Emits `(defcustom name value ["doc"] [:type expr])`. The optional `type:` expression lowers like any expression, so `type: :string` emits `:type 'string` and richer types use quote/quasiquote data. |
+| `require :name`, `provide :name` | Top-level only; emit `(require 'name)` and `(provide 'name)`, keeping source order among definitions. |
+| `interactive` | Emits `(interactive)`. Exactly once in each command body, directly after the optional docstring; no arguments, no block. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
 | `el.message("value: %s", el.buffer_name)` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
@@ -88,6 +93,7 @@ arguments to `el.*` calls, and final values in functions and lambdas.
 | `:after_save_hook` | `'after-save-hook` | Quoted Elisp symbol; underscores become hyphens |
 | `[1, :two, el.point]` | `(vector 1 'two (point))` | Vector whose elements are evaluated in order |
 | `name` | `ruri--local-name` | Reference to a parameter or local in the same definition |
+| `var :case_fold_search` | `case-fold-search` | Dynamic value of an Emacs Lisp variable; emits the bare symbol, unlike quoted symbol literals |
 | `fn do \|value\| … end` | `(lambda (ruri--local-value) …)` | Lexical anonymous function |
 | `function(:identity)` | `(function identity)` | Named function value suitable for callbacks |
 | `list(1, :two)` | `(list 1 'two)` | Evaluated proper list |
@@ -176,9 +182,11 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 - Each `_` becomes `-` in the emitted Emacs Lisp name (`:hello_buffer`
   defines `hello-buffer`).
 - Commands and functions share one definition namespace and must not define
-  the same name. Because the source
-  grammar excludes hyphens, underscore-to-hyphen conversion is one-to-one for
-  valid definition names.
+  the same name. Because the source grammar excludes hyphens,
+  underscore-to-hyphen conversion is one-to-one for valid definition names.
+- Variables (`variable`, `constant`, `custom`) live in Emacs Lisp's separate
+  variable namespace, so a variable may share a name with a function;
+  duplicates within each variable kind are rejected.
 - Reloading the same extension may redefine its own definitions normally —
   the duplicate check is per compile unit, not per Emacs session.
 - Local names follow the same ASCII source pattern. The compiler emits a
@@ -211,14 +219,15 @@ Everything outside the table above, including but not limited to:
   and standalone literal statements.
 - Explicit receivers other than the reserved `el` namespace and supported
   `.each` iteration (`Kernel.insert("x")`, `foo.bar`), safe-navigation,
-  unsupported operators, unqualified arbitrary method calls, `require`, and
+  unsupported operators, unqualified arbitrary method calls, and
   `lambda`/`proc`.
 - Keyword arguments, splats, default parameters, heredocs, and interpolation.
   `fn`, `function`, and `.each` accept the block parameters described above;
   `command`, `with_current_buffer`, and `el.*` accept only parameterless blocks;
   `insert` does not accept a block.
-- Executable top-level expressions: a `.ruri` file may contain only command
-  and function definitions (plus comments).
+- Executable top-level expressions: a `.ruri` file may contain only
+  definitions and declarations — `command`, `function`, `variable`,
+  `constant`, `custom`, `require`, and `provide` (plus comments).
 - Nested `command` or `function` definitions; `interactive` outside a command body,
   duplicated, or not first; empty `with_current_buffer` blocks;
   `insert` with a block.
@@ -273,8 +282,11 @@ structure safely:
    boolean, comparison, arithmetic, `while`, `until`, and side-effecting
    `.each` syntax.
 4. Command argument lists and interactive specifications.
-5. Error handling, nonlocal exits, declarations, documentation strings, and
-   package-level definitions.
+5. Variable and package structure; v0.9 provides `variable`, `constant`,
+   `custom` (with `type:`), `require`, and `provide`, documentation strings
+   for commands and functions, and `var` reads of dynamic Elisp variables.
+6. Error handling and nonlocal exits (`condition-case`, `unwind-protect`,
+   `catch`, `throw`) remain future work.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still
