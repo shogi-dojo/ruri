@@ -49,6 +49,7 @@ module Ruri
         padding = "  " * indent
         return render_collection(node.items, indent, "(", ")") if node.is_a?(List)
         return ["#{padding}#{render_inline(node)}"] if node.is_a?(InlineList)
+        return ["#{padding}#{render_sequence(node)}"] if node.is_a?(InlineSequence)
         return render_collection(node.items, indent, "[", "]") if node.is_a?(Vector)
         return render_dotted_pair(node, indent) if node.is_a?(DottedPair)
         if prefix_node?(node) && !inline?(node)
@@ -98,11 +99,15 @@ module Ruri
         lines
       end
 
+      def render_sequence(node)
+        node.items.map { |item| render_inline(item) }.join(" ")
+      end
+
       def inline?(node)
         case node
         when Symbol, String, Integer, Float
           true
-        when Docstring
+        when Docstring, InlineSequence
           false
         when Quote, QuasiQuote, Unquote, Splice
           inline?(node.value)
@@ -131,18 +136,14 @@ module Ruri
           "#{prefix_for(node)}#{render_inline(node.value)}"
         when InlineList
           "(#{node.items.map { |item| render_inline(item) }.join(" ")})"
+        when InlineSequence
+          render_sequence(node)
         when Vector
-          return "[#{node.items.map { |item| render_inline(item) }.join(" ")}]" if inline?(node)
-
-          raise ArgumentError, "nested vector cannot be rendered inline"
+          "[#{node.items.map { |item| render_inline(item) }.join(" ")}]"
         when DottedPair
-          return "(#{render_inline(node.car)} . #{render_inline(node.cdr)})" if inline?(node)
-
-          raise ArgumentError, "nested dotted pair cannot be rendered inline"
+          "(#{render_inline(node.car)} . #{render_inline(node.cdr)})"
         when List
-          return "()" if node.items.empty?
-
-          raise ArgumentError, "nested nonempty list cannot be rendered inline"
+          "(#{node.items.map { |item| render_inline(item) }.join(" ")})"
         else
           raise ArgumentError, "cannot print Emacs Lisp node: #{node.class}"
         end

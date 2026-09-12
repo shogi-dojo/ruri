@@ -15,6 +15,9 @@ module Ruri
     Docstring = Data.define(:value)
     List = Data.define(:items)
     InlineList = Data.define(:items)
+    # Atoms rendered together on one line without surrounding parens,
+    # such as an Elisp keyword and its value (:type 'string).
+    InlineSequence = Data.define(:items)
     Vector = Data.define(:items)
     DottedPair = Data.define(:car, :cdr)
     Quote = Data.define(:value)
@@ -71,6 +74,11 @@ module Ruri
       InlineList.new(items: items.freeze)
     end
 
+    def inline_sequence(*items)
+      validate_items!(items, "inline sequences")
+      InlineSequence.new(items: items.freeze)
+    end
+
     def vector(*items)
       validate_items!(items, "vectors")
       Vector.new(items: items.freeze)
@@ -106,8 +114,9 @@ module Ruri
     end
 
     def node?(value)
-      [Symbol, String, Integer, Float, Docstring, List, InlineList, Vector,
-       DottedPair, Quote, QuasiQuote, Unquote, Splice].any? do |type|
+      [Symbol, String, Integer, Float, Docstring, List, InlineList,
+       InlineSequence, Vector, DottedPair, Quote, QuasiQuote, Unquote,
+       Splice].any? do |type|
         value.is_a?(type)
       end
     end

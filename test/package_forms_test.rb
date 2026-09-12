@@ -120,4 +120,55 @@ class PackageFormsTest < Minitest::Test
 
     assert_match(/literal string argument required/, diag.message)
   end
+
+  def test_emits_defcustom_with_docstring_and_type
+    output = compile_source(<<~'RURI')
+      custom :greeting_style, :plain, "How to greet.", type: :string
+    RURI
+
+    assert_includes output, <<~ELISP
+      (defcustom greeting-style 'plain
+        "How to greet."
+        :type 'string)
+    ELISP
+  end
+
+  def test_emits_defcustom_without_docstring
+    output = compile_source(<<~RURI)
+      custom :greeting_count, 1, type: :integer
+    RURI
+
+    assert_includes output, "(defcustom greeting-count 1\n  :type 'integer)"
+  end
+
+  def test_custom_type_accepts_quoted_data
+    output = compile_source(<<~'RURI')
+      custom :greeting_names, [], type: quote(list(:repeat, :string))
+    RURI
+
+    assert_includes output, ":type '(repeat string)"
+  end
+
+  def test_rejects_custom_without_value
+    diag = single_diagnostic("custom :greeting_style")
+
+    assert_match(/custom requires two or three arguments/, diag.message)
+  end
+
+  def test_rejects_unknown_custom_keywords
+    diag = single_diagnostic('custom :greeting_style, :plain, "d", group: :faces')
+
+    assert_match(/custom does not accept keyword arguments: group; only type: is allowed/, diag.message)
+  end
+
+  def test_custom_shares_the_variable_namespace
+    diags = diagnostics_of(<<~RURI)
+      variable :greeting_style, :plain
+
+      custom :greeting_style, :fancy
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/duplicate custom definition `greeting-style`/, diags.first.message)
+  end
 end

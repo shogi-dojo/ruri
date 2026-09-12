@@ -172,6 +172,7 @@ module Ruri
       when :function then parse_function_definition(node)
       when :variable then parse_variable_definition(node, "variable", "defvar", false)
       when :constant then parse_variable_definition(node, "constant", "defconst", true)
+      when :custom then parse_custom_definition(node)
       else unsupported(node)
       end
     end
@@ -333,6 +334,72 @@ module Ruri
         name: lisp_name,
         value: value,
         docstring: docstring
+      )
+    end
+
+    # `custom :name value ["doc"] [type: expression]` lowers to defcustom.
+    # The type value lowers like any expression, so `type: :string` emits
+    # :type 'string and richer types use quote/quasiquote data.
+    def parse_custom_definition(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `custom` with explicit receiver")
+        return
+      end
+      if node.block
+        error(node.location, "custom does not take a block")
+        return
+      end
+
+      positional, keywords = split_arguments(node)
+      unknown = keywords.map(&:first).reject { |name| name == "type" }
+      unless unknown.empty?
+        error(node.location, "custom does not accept keyword arguments: #{unknown.join(', ')}; only type: is allowed")
+        return
+      end
+      unless positional.length.between?(2, 3)
+        error(node.location, "custom requires two or three arguments: :name, value, and an optional docstring")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid custom name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+      lisp_name = source_name.tr("_", "-")
+      if @seen_variable_names.key?(lisp_name)
+        previous_kind = @seen_variable_names.fetch(lisp_name)
+        error(positional[0].location,
+              "duplicate custom definition `#{lisp_name}`; already defined as #{previous_kind}")
+        return
+      end
+      @seen_variable_names[lisp_name] = "custom"
+
+      value = parse_expression(positional[1])
+      return unless value
+
+      docstring = nil
+      if positional[2]
+        ok, text = extract_string(positional[2])
+        return unless ok
+
+        docstring = text
+      end
+
+      type = nil
+      if (type_node = keywords.assoc("type")&.last)
+        type = parse_expression(type_node)
+        return unless type
+      end
+
+      @definitions << Forms::CustomDefinition.new(
+        source_name: source_name,
+        name: lisp_name,
+        value: value,
+        docstring: docstring,
+        type: type
       )
     end
 

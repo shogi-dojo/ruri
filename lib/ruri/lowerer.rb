@@ -17,6 +17,7 @@ module Ruri
         when Forms::FunctionDefinition then lower_function_definition(definition)
         when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
         when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
+        when Forms::CustomDefinition then lower_custom_definition(definition)
         else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
         end
       end
@@ -71,6 +72,22 @@ module Ruri
       items = [Elisp.symbol(lisp_form), Elisp.symbol(definition.name)]
       items << lower_expression(definition.value) if definition.value
       items << lower_docstring_text(definition.docstring) if definition.docstring
+      Elisp.list(*items)
+    end
+
+    def lower_custom_definition(definition)
+      items = [
+        Elisp.symbol("defcustom"),
+        Elisp.symbol(definition.name),
+        lower_expression(definition.value)
+      ]
+      items << lower_docstring_text(definition.docstring) if definition.docstring
+      if definition.type
+        items << Elisp.inline_sequence(
+          Elisp.symbol(":type"),
+          lower_expression(definition.type)
+        )
+      end
       Elisp.list(*items)
     end
 

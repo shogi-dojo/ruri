@@ -17,6 +17,10 @@ module Ruri
     VariableDefinition = Data.define(:source_name, :name, :value, :docstring)
     ConstantDefinition = Data.define(:source_name, :name, :value, :docstring)
 
+    # Top-level customizable variable. +type+ is an optional expression
+    # lowered after the :type keyword.
+    CustomDefinition = Data.define(:source_name, :name, :value, :docstring, :type)
+
     # The required first statement of every command body.
     Interactive = Data.define
 
