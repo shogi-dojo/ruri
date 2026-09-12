@@ -112,6 +112,12 @@ module Ruri
     Loop = Data.define(:condition, :body, :negated)
     Each = Data.define(:collection, :parameter, :body)
 
+    # Value-producing iteration: `.map` → mapcar, `.select` → seq-filter
+    # (needs `require :seq` in the source), `.find` → seq-find (likewise).
+    # The block's final expression maps the element. Kept distinct from
+    # side-effecting `.each`, which lowers to mapc.
+    Iteration = Data.define(:name, :collection, :parameter, :body)
+
     # `begin/rescue[/else]` lowered to condition-case. +var+ is the hygienic
     # error-object binding shared by every clause, or nil. +clauses+ are
     # [conditions, body] pairs in source order; +conditions+ is a nonempty

@@ -1053,6 +1053,51 @@ end')
     assert_match(/break takes at most one value/, diags[0].message)
   end
 
+  def test_parses_map_select_and_find_iteration
+    command = parse(<<~RURI).first
+      command :iter_cmd do
+        interactive
+        doubled = list(1, 2).map do |item|
+          item * 2
+        end
+        evens = list(1, 2).select do |item|
+          item % 2 == 0
+        end
+        first = list(1, 2).find do |item|
+          item > 0
+        end
+        el.identity(list(doubled, evens, first))
+      end
+    RURI
+
+    names = command.body.map { |form| form.class.name.split("::").last }
+    assert_equal ["Interactive", "LocalWrite", "LocalWrite", "LocalWrite", "Call"], names
+    doubled = command.body[1].value
+    assert_instance_of Ruri::Forms::Iteration, doubled
+    assert_equal "map", doubled.name
+    assert_equal "ruri--local-item", doubled.parameter
+    assert_equal "select", command.body[2].value.name
+    assert_equal "find", command.body[3].value.name
+  end
+
+  def test_rejects_malformed_iteration_blocks
+    diags = diagnostics_of(<<~RURI)
+      command :bad_iter do
+        interactive
+        el.identity(list(1).map(2) { nil })
+        list(1).map
+        list(1, 2).map do |first, second|
+          first
+        end
+      end
+    RURI
+
+    assert_equal 3, diags.size
+    assert_match(/map does not take call arguments/, diags[0].message)
+    assert_match(/map requires a block/, diags[1].message)
+    assert_match(/map requires exactly one block parameter/, diags[2].message)
+  end
+
   def test_rejects_malformed_catch_and_throw
     diags = diagnostics_of(<<~RURI)
       function :bad do

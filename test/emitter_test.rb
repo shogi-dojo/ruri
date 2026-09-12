@@ -446,4 +446,27 @@ class EmitterTest < Minitest::Test
       (throw 'ruri--return-1 ruri--local-total)))
     ELISP
   end
+
+  def test_emits_map_select_and_find
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      require :seq
+
+      function :pick do |items|
+        doc "First even item."
+        items.find do |item|
+          item % 2 == 0
+        end
+      end
+    RURI
+
+    assert_includes output, "(require 'seq)"
+    assert_includes output, <<-'ELISP'.chomp
+  (seq-find
+    (lambda (ruri--local-item)
+      (equal
+        (mod ruri--local-item 2)
+        0))
+    ruri--local-items)
+    ELISP
+  end
 end

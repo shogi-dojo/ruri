@@ -569,8 +569,8 @@ module Ruri
           forms << form if form
           next
         end
-        if stmt.name == :each && stmt.receiver
-          form = parse_each(stmt)
+        if %i[each map select find].include?(stmt.name) && stmt.receiver
+          form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next
         end
@@ -1030,20 +1030,28 @@ module Ruri
     end
 
     def parse_each(node)
+      parse_block_iteration(node, :each)
+    end
+
+    # Shared shape for `.each`, `.map`, `.select`, and `.find`: a receiver
+    # expression, no call arguments, and exactly one required block
+    # parameter. Only the block body differs — each is statement-scoped,
+    # the iteration forms parse it for value.
+    def parse_block_iteration(node, name)
       if node.arguments
-        error(node.location, "each does not take call arguments")
+        error(node.location, "#{name} does not take call arguments")
         return nil
       end
       unless node.block
-        error(node.location, "each requires a block")
+        error(node.location, "#{name} requires a block")
         return nil
       end
 
-      parameters = parse_block_parameters(node.block, "each")
+      parameters = parse_block_parameters(node.block, name.to_s)
       return nil unless parameters
 
       unless parameters.required.one? && parameters.optionals.empty? && parameters.rest.nil?
-        error(node.block.location, "each requires exactly one block parameter")
+        error(node.block.location, "#{name} requires exactly one block parameter")
         return nil
       end
 
@@ -1054,16 +1062,29 @@ module Ruri
       begin
         @local_names = ((@local_names || []) + parameters.names).uniq
         body = with_exit_scope(:loop) do
-          parse_buffer_statements(node.block.body&.body || [])
+          if name == :each
+            parse_buffer_statements(node.block.body&.body || [])
+          else
+            parse_value_body(node.block.body&.body || [])
+          end
         end
       ensure
         @local_names = previous_names
       end
-      Forms::Each.new(
-        collection: collection,
-        parameter: generated_local_name(parameters.required.first),
-        body: body
-      )
+      if name == :each
+        Forms::Each.new(
+          collection: collection,
+          parameter: generated_local_name(parameters.required.first),
+          body: body
+        )
+      else
+        Forms::Iteration.new(
+          name: name.to_s,
+          collection: collection,
+          parameter: generated_local_name(parameters.required.first),
+          body: body
+        )
+      end
     end
 
     def parse_elisp_call(node)
@@ -1149,6 +1170,9 @@ module Ruri
         end
         return parse_operator(node) if operator_call?(node)
         return parse_elisp_call(node) if elisp_call?(node)
+        if %i[map select find].include?(node.name) && node.receiver && node.block
+          return parse_block_iteration(node, node.name)
+        end
         # Ruby parses a bare name used before its first textual assignment as
         # a zero-argument call. Ruri locals have command-wide lexical scope,
         # so reinterpret that precise shape when a matching assignment exists.
@@ -1664,8 +1688,8 @@ module Ruri
           forms << form if form
           next
         end
-        if stmt.name == :each && stmt.receiver
-          form = parse_each(stmt)
+        if %i[each map select find].include?(stmt.name) && stmt.receiver
+          form = parse_block_iteration(stmt, stmt.name)
           forms << form if form
           next
         end

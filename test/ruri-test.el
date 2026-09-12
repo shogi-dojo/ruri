@@ -507,6 +507,30 @@
     ;; next skips the zero items.
     (should (= 9 (ruri-test-skip-zeros)))))
 
+(ert-deftest ruri-test/map-select-find-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri iteration " t))
+         (source (expand-file-name "iteration.ruri" dir)))
+    (with-temp-file source
+      (insert "require :seq\n\n"
+              "function :ruri_test_stats do |items|\n"
+              "  doc \"Doubled evens and the first item over 3.\"\n"
+              "  evens = items.select do |item|\n"
+              "    item % 2 == 0\n"
+              "  end\n"
+              "  doubled = evens.map do |item|\n"
+              "    item * 2\n"
+              "  end\n"
+              "  first_big = items.find do |item|\n"
+              "    item > 3\n"
+              "  end\n"
+              "  list(doubled, first_big)\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; select/map/find chain over a real list, requiring seq explicitly.
+    (should (equal '((4 8 16) 4) (ruri-test-stats (list 1 2 3 4 8))))
+    ;; An empty selection is Elisp nil, and find misses too.
+    (should (equal '(nil nil) (ruri-test-stats (list 1))))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

@@ -22,7 +22,15 @@ module Ruri
 
     # Boundaries where an exit belongs to the inner construct: nested loops
     # own their break/next, lambdas own their returns.
-    LOOP_EXIT_BOUNDARIES = [Forms::Lambda, Forms::Loop, Forms::Each].freeze
+    LOOP_EXIT_BOUNDARIES = [Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration].freeze
+
+    # `.map` → mapcar, `.select` → seq-filter, `.find` → seq-find. The
+    # latter two need `(require 'seq)` in the source, like any seq use.
+    ITERATION_CALLS = {
+      "map" => "mapcar",
+      "select" => "seq-filter",
+      "find" => "seq-find"
+    }.freeze
 
     def lower(definitions)
       definitions.map do |definition|
@@ -114,6 +122,8 @@ module Ruri
       when Forms::Loop
         body_has_exit?(form.body, klass, boundaries)
       when Forms::Each
+        body_has_exit?(form.body, klass, boundaries)
+      when Forms::Iteration
         body_has_exit?(form.body, klass, boundaries)
       when Forms::Rescue
         body_has_exit?(form.body, klass, boundaries) ||
@@ -260,6 +270,9 @@ module Ruri
         when Forms::Each
           collect_expression_locals(statement.collection, names, shadowed)
           collect_locals(statement.body, names, shadowed + [statement.parameter])
+        when Forms::Iteration
+          collect_expression_locals(statement.collection, names, shadowed)
+          collect_locals(statement.body, names, shadowed + [statement.parameter])
         when Forms::Rescue
           # The condition-case binding shadows the outer let inside the
           # form, but the name stays declared so reads after the block see
@@ -328,6 +341,9 @@ module Ruri
         collect_locals(expression.body, names, shadowed)
       when Forms::Throw
         collect_expression_locals(expression.value, names, shadowed)
+      when Forms::Iteration
+        collect_expression_locals(expression.collection, names, shadowed)
+        collect_locals(expression.body, names, shadowed + [expression.parameter])
       end
     end
 
@@ -373,6 +389,8 @@ module Ruri
         lower_loop(statement)
       when Forms::Each
         lower_each(statement)
+      when Forms::Iteration
+        lower_iteration(statement)
       when Forms::Rescue
         lower_rescue(statement)
       when Forms::Ensure
@@ -467,6 +485,8 @@ module Ruri
         lower_rescue(expression)
       when Forms::Ensure
         lower_ensure(expression)
+      when Forms::Iteration
+        lower_iteration(expression)
       when Forms::Catch
         lower_catch(expression)
       when Forms::Throw
@@ -631,6 +651,25 @@ module Ruri
       )
       mapc_form = catch_wrap(break_tag, [mapc_form]) if break_tag
       mapc_form
+    end
+
+    def lower_iteration(iteration)
+      break_tag, next_tag = enter_loop_scopes(iteration.body)
+      lambda_body = iteration.body.map { |statement| lower_statement(statement) }
+      leave_loop_scopes(break_tag, next_tag)
+      lambda_body = [catch_wrap(next_tag, lambda_body)] if next_tag
+      lambda_form = Elisp.list(
+        Elisp.symbol("lambda"),
+        Elisp.inline_list(Elisp.symbol(iteration.parameter)),
+        *lambda_body
+      )
+      call_form = Elisp.list(
+        Elisp.symbol(ITERATION_CALLS.fetch(iteration.name)),
+        lambda_form,
+        lower_expression(iteration.collection)
+      )
+      call_form = catch_wrap(break_tag, [call_form]) if break_tag
+      call_form
     end
 
     def enter_loop_scopes(body)

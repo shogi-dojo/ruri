@@ -482,4 +482,31 @@ class LowererTest < Minitest::Test
     lowered = Ruri::Lowerer.lower([function]).first
     assert_equal "while", lowered.items[3].items.first.name
   end
+
+  def test_lowers_map_select_and_find_to_their_elisp_calls
+    definitions = parse(<<~RURI)
+      function :transform do
+        list(1).map do |item|
+          item
+        end
+      end
+
+      function :filter do
+        list(1).select do |item|
+          item
+        end
+      end
+
+      function :first_of do
+        list(1).find do |item|
+          item
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower(definitions)
+    assert_equal "mapcar", lowered[0].items[3].items.first.name
+    assert_equal "seq-filter", lowered[1].items[3].items.first.name
+    assert_equal "seq-find", lowered[2].items[3].items.first.name
+  end
 end
