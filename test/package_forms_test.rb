@@ -306,6 +306,17 @@ class PackageFormsTest < Minitest::Test
     assert_includes output, %q{(org-element-property :begin 'symbol-node)}
   end
 
+  def test_org_fragtog_conversion_compiles
+    source = File.read(File.expand_path("../examples/org-fragtog.ruri", __dir__))
+    output = Ruri.compile(source, path: "examples/org-fragtog.ruri")
+
+    assert_includes output, "(provide 'org-fragtog)"
+    assert_includes output, "(defvar-local org-fragtog--timer nil"
+    assert_includes output, "(org-element-property :begin ruri--local-frag)"
+    assert_includes output, ":options '(org-at-table-p org-at-table-el-p org-at-block-p org-at-heading-p)"
+    assert_includes output, "(setq org-fragtog-mode\n    (not org-fragtog-mode))"
+  end
+
   def test_var_read_emits_bare_symbol
     output = compile_source(<<~RURI)
       command :show_case_cmd do

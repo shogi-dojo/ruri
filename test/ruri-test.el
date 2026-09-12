@@ -323,5 +323,26 @@
                    (documentation (quote ruri-test-greet-cmd))))
     (should (equal "Double N." (documentation (quote ruri-test-double))))))
 
+(ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri org-fragtog " t))
+         (source (expand-file-name "org-fragtog.ruri" dir)))
+    (copy-file (expand-file-name "examples/org-fragtog.ruri" ruri-test--root) source t)
+    (ruri-load-file source)
+    (should (featurep (quote org-fragtog)))
+    (should (fboundp (quote org-fragtog-mode)))
+    (should (fboundp (quote org-fragtog--post-cmd)))
+    (should (= 0.0 org-fragtog-preview-delay))
+    (should (equal (quote hook) (get (quote org-fragtog-ignore-predicates) (quote custom-type))))
+    (with-temp-buffer
+      (delay-mode-hooks (org-mode))
+      (org-fragtog-mode)
+      (should org-fragtog-mode)
+      (should (memq (quote org-fragtog--post-cmd) post-command-hook))
+      ;; With no fragments around, the hook function must run without error.
+      (org-fragtog--post-cmd)
+      (org-fragtog-mode)
+      (should (null org-fragtog-mode))
+      (should (not (memq (quote org-fragtog--post-cmd) post-command-hook))))))
+
 (provide (quote ruri-test))
 ;;; ruri-test.el ends here

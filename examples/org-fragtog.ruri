@@ -1,0 +1,164 @@
+# org-fragtog written in Ruri — a conversion of Benjamin Levy's
+# org-fragtog.el (MIT/X11; original preserved with its license in
+# test/fixtures/org-fragtog-original.el).
+#
+# This is a semantic conversion, not byte-identical: define-minor-mode is
+# emulated with a defvar-local plus a toggle function, the &optional
+# parameter of org-fragtog--disable-frag is split into a second function,
+# and the let* bindings become sequential Ruri locals. Compile with:
+#   bundle exec ruby bin/ruri compile examples/org-fragtog.ruri --output org-fragtog.el
+
+require :org
+require :org_element
+
+custom :org_fragtog_ignore_predicates, nil,
+       "List of predicates to determine whether to ignore a fragment.\nFor example, adding `org-at-table-p' will ignore fragments inside tables.",
+       group: :org_latex,
+       type: :hook,
+       options: quote(list(:org_at_table_p, :org_at_table_el_p, :org_at_block_p, :org_at_heading_p))
+
+custom :org_fragtog_preview_delay, 0.0,
+       "Seconds of delay before LaTeX preview.",
+       group: :org_latex,
+       type: :number
+
+variable_local :org_fragtog__prev_frag, nil,
+               "Previous fragment that surrounded the cursor.\nIf the cursor was not on a fragment, this variable is nil.  This is used to\ntrack when the cursor leaves a fragment."
+
+variable_local :org_fragtog__prev_point, nil,
+               "Value of point from before the most recent command."
+
+variable_local :org_fragtog__timer, nil,
+               "Current active timer."
+
+variable_local :org_fragtog_mode, nil,
+               "Non-nil if Org-Fragtog mode is enabled.\nUse the function `org-fragtog-mode' to toggle this mode."
+
+function :org_fragtog_mode do
+  doc "A minor mode that automatically toggles Org mode LaTeX fragment previews.\nFragment previews are disabled for editing when your cursor steps onto them,\nand re-enabled when the cursor leaves."
+  assign :org_complex_heading_regexp, var(:org_complex_heading_regexp) || ""
+  assign :org_fragtog_mode, !var(:org_fragtog_mode)
+  if var(:org_fragtog_mode)
+    el.add_hook(:post_command_hook, function(:org_fragtog__post_cmd), nil, true)
+  else
+    el.remove_hook(:post_command_hook, function(:org_fragtog__post_cmd), true)
+  end
+end
+
+function :org_fragtog__post_cmd do
+  doc "This function is executed by `post-command-hook' in `org-fragtog-mode'.\nIt handles toggling fragments depending on whether the cursor entered or exited\nthem."
+  prev_frag = var(:org_fragtog__prev_frag)
+  unless prev_frag
+    if var(:org_fragtog__prev_point)
+      prev_frag = (el.save_excursion do
+        el.goto_char(var(:org_fragtog__prev_point))
+        el.org_fragtog__cursor_frag
+      end)
+    end
+  end
+  prev_frag_start_pos = el.org_fragtog__frag_start(prev_frag)
+  cursor_frag = el.org_fragtog__cursor_frag
+  frag_same = el.org_fragtog__frag_start(cursor_frag) == prev_frag_start_pos
+  frag_changed = !frag_same
+  frag_at_prev_pos = prev_frag_start_pos && (el.save_excursion do
+    el.goto_char(prev_frag_start_pos)
+    el.org_fragtog__cursor_frag
+  end)
+  if frag_changed
+    assign :org_fragtog__prev_frag, cursor_frag
+    if frag_at_prev_pos && !el.org_fragtog__frag_enabled(frag_at_prev_pos)
+      el.org_fragtog__enable_frag(frag_at_prev_pos)
+    end
+    if var(:org_fragtog__timer)
+      el.cancel_timer(var(:org_fragtog__timer))
+      assign :org_fragtog__timer, nil
+    end
+    if cursor_frag
+      if var(:org_fragtog_preview_delay) > 0
+        assign :org_fragtog__timer, el.run_with_idle_timer(var(:org_fragtog_preview_delay), nil, function(:org_fragtog__disable_frag_renewed))      else
+        el.org_fragtog__disable_frag(cursor_frag)
+      end
+    end
+  end
+  assign :org_fragtog__prev_point, el.point
+end
+
+function :org_fragtog__frag_enabled do |frag|
+  doc "Return whether FRAG is enabled.\nA fragment is enabled when it has a preview image overlay in the buffer."
+  el.org_fragtog__overlay_in_p(el.org_fragtog__frag_start(frag), el.org_fragtog__frag_end(frag))
+end
+
+function :org_fragtog__overlay_in_p do |start_pos, end_pos|
+  doc "Return whether there is a fragment overlay between START-POS and END-POS."
+  el.seq_find(
+    fn do |overlay|
+      el.overlay_get(overlay, :org_overlay_type) == :org_latex_overlay
+    end,
+    el.overlays_in(start_pos, end_pos)
+  )
+end
+
+function :org_fragtog__frag_start do |frag|
+  doc "Return the position of the beginning of FRAG."
+  el.org_element_property(keyword(:begin), frag)
+end
+
+function :org_fragtog__frag_end do |frag|
+  doc "Return the position of the end of FRAG."
+  el.org_element_property(keyword(:end), frag) - el.org_element_property(keyword(:post_blank), frag)
+end
+
+function :org_fragtog__cursor_frag do
+  doc "Return the fragment currently surrounding the cursor.\nIf there is none, return nil.\nIf the fragment is ignored from rules in `org-fragtog-ignore-predicates',\nreturn nil."
+  elem = el.org_element_context
+  elem_is_latex = el.member(el.org_element_type(elem), quote(list(:latex_fragment, :latex_environment))) && el.point < el.org_fragtog__frag_end(elem)
+  should_ignore = el.run_hook_with_args_until_success(var(:org_fragtog_ignore_predicates))
+  if elem_is_latex && !should_ignore
+    elem
+  end
+end
+
+function :org_fragtog__enable_frag do |frag|
+  doc "Enable the Org LaTeX fragment preview for the fragment FRAG."
+  el.save_excursion do
+    el.org_fragtog__disable_frag(frag)
+  end
+  el.save_excursion do
+    el.goto_char(el.org_fragtog__frag_start(frag))
+    el.re_search_forward("[^ \t]")
+    el.ignore_errors do
+      el.org_latex_preview
+    end
+  end
+end
+
+function :org_fragtog__set_point_after_disable_frag do |frag|
+  doc "Set point to where it should be after FRAG was disabled.\nIf point decreases and enters a fragment from the end, disabling it, then point\nshould move to the end of the fragment.  If point moved up one line, its column\nshould be maintained."
+  if var(:org_fragtog__prev_point) && (el.abs(var(:org_fragtog__prev_point) - el.org_fragtog__frag_end(frag)) < el.abs(var(:org_fragtog__prev_point) - el.org_fragtog__frag_start(frag)))
+    prev_point_column = (el.save_excursion do
+      el.goto_char(var(:org_fragtog__prev_point))
+      el.current_column
+    end)
+    el.goto_char(el.org_fragtog__frag_end(frag) - 1)
+    unless el.line_number_at_pos(var(:org_fragtog__prev_point)) == el.line_number_at_pos
+      el.move_to_column(prev_point_column)
+    end
+  end
+end
+
+function :org_fragtog__disable_frag do |frag|
+  doc "Disable the Org LaTeX fragment preview for the fragment FRAG."
+  if frag
+    el.org_clear_latex_preview(el.org_fragtog__frag_start(frag), el.org_fragtog__frag_end(frag))
+    el.org_fragtog__set_point_after_disable_frag(frag)
+  end
+end
+
+function :org_fragtog__disable_frag_renewed do
+  doc "Renew the fragment at point, then disable it.\nRenewing happens in case point was adjusted; see the Emacs Lisp manual,\n21.6 Adjusting Point After Commands."
+  assign :org_fragtog__prev_frag, el.org_fragtog__cursor_frag
+  assign :org_fragtog__timer, nil
+  el.org_fragtog__disable_frag(el.org_fragtog__cursor_frag)
+end
+
+provide :org_fragtog
