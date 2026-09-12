@@ -34,11 +34,12 @@ module Ruri
       lowered_rest = rest.map { |statement| lower_statement(statement) }
       locals = collect_locals(rest)
       lowered_rest = wrap_locals(locals, lowered_rest) unless locals.empty?
+      lowered_rest = lower_parameter_defaults(command.parameters) + lowered_rest
 
       Elisp.list(
         Elisp.symbol("defun"),
         Elisp.symbol(command.name),
-        Elisp.inline_list,
+        lower_parameter_list(command.parameters),
         *doc_form,
         lower_statement(interactive_form),
         *lowered_rest
@@ -228,7 +229,9 @@ module Ruri
     def lower_statement(statement)
       case statement
       when Forms::Interactive
-        Elisp.list(Elisp.symbol("interactive"))
+        items = [Elisp.symbol("interactive")]
+        items << lower_expression(statement.spec) if statement.spec
+        Elisp.list(*items)
       when Forms::Docstring
         lower_docstring(statement)
       when Forms::Insert

@@ -191,10 +191,6 @@ module Ruri
         error(node.location, "command requires a do...end block")
         return
       end
-      if node.block.parameters
-        error(block_parameters_location(node.block), "command blocks do not take parameters")
-        return
-      end
 
       args = node.arguments&.arguments || []
       if args.length != 1
@@ -210,8 +206,16 @@ module Ruri
 
       source_name, lisp_name = definition_name
 
-      body = with_local_scope(node.block) { parse_command_body(node.block) }
-      @definitions << Forms::Command.new(source_name: source_name, name: lisp_name, body: body)
+      parameters = parse_block_parameters(node.block, "command")
+      return unless parameters
+
+      body = with_local_scope(node.block, parameters.names) { parse_command_body(node.block) }
+      @definitions << Forms::Command.new(
+        source_name: source_name,
+        name: lisp_name,
+        parameters: generated_parameter_list(parameters),
+        body: body
+      )
     end
 
     def parse_function_definition(node)
@@ -574,15 +578,8 @@ module Ruri
         when :interactive
           if index <= (docstring_seen ? 1 : 0) && !interactive_seen
             interactive_seen = true
-            if stmt.arguments
-              interactive_problem_reported = true
-              error(stmt.location, "interactive takes no arguments")
-            elsif stmt.block
-              interactive_problem_reported = true
-              error(stmt.location, "interactive does not take a block")
-            else
-              forms << Forms::Interactive.new
-            end
+            interactive_form = parse_interactive_statement(stmt)
+            forms << interactive_form if interactive_form
           else
             interactive_problem_reported = true
             error(stmt.location, "interactive must appear exactly once, directly after the optional docstring")
@@ -671,6 +668,31 @@ module Ruri
       return nil unless ok
 
       Forms::Insert.new(text: text)
+    end
+
+    # `interactive` and `interactive "P"` lower to `(interactive)` and
+    # `(interactive "P")`. The spec string is read by Emacs at invocation
+    # time and is never evaluated as Ruri, so it is a typed form with a
+    # literal string rather than an ordinary expression argument.
+    def parse_interactive_statement(node)
+      if node.block
+        error(node.location, "interactive does not take a block")
+        return nil
+      end
+      args = node.arguments&.arguments || []
+      if args.length > 1
+        error(node.location, "interactive takes at most one literal string argument")
+        return nil
+      end
+
+      spec = nil
+      if args.one?
+        ok, text = extract_string(args[0])
+        return nil unless ok
+
+        spec = Forms::Literal.new(kind: :string, value: text)
+      end
+      Forms::Interactive.new(spec: spec)
     end
 
     # The optional first `doc "..."` statement of a command or function

@@ -857,12 +857,53 @@ end')
     assert_equal 3, diag.line
   end
 
-  def test_rejects_interactive_with_arguments
-    diag = single_diagnostic('command :a do
-  interactive("p")
-end')
+  def test_rejects_interactive_with_multiple_arguments
+    diags = diagnostics_of(<<~'RURI')
+      command :a do
+        interactive "p", "r"
+      end
+    RURI
 
-    assert_match(/interactive takes no arguments/, diag.message)
+    assert_equal 1, diags.size
+    assert_match(/interactive takes at most one literal string argument/, diags[0].message)
+  end
+
+  def test_rejects_interactive_with_non_string_spec
+    diags = diagnostics_of(<<~RURI)
+      command :a do
+        interactive :p
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/literal string argument required/, diags[0].message)
+  end
+
+  def test_parses_command_parameters_and_interactive_spec
+    command = parse(<<~RURI).first
+      command :jump_cmd do |argument, raw_prefix = nil|
+        doc "Jump to ARGUMENT."
+        interactive "P"
+        el.message("%s %s", argument, raw_prefix)
+      end
+    RURI
+
+    assert_equal ["ruri--local-argument", "ruri--local-raw-prefix"],
+                 command.parameters.names
+    interactive = command.body[1]
+    assert_instance_of Ruri::Forms::Interactive, interactive
+    assert_equal "P", interactive.spec.value
+  end
+
+  def test_parses_interactive_without_spec
+    command = parse(<<~RURI).first
+      command :plain_cmd do
+        interactive
+        insert("hi")
+      end
+    RURI
+
+    assert_nil command.body[0].spec
   end
 
   def test_rejects_interactive_inside_buffer_block
@@ -895,10 +936,11 @@ end')
     assert_match(/exactly one literal symbol argument/, diag.message)
   end
 
-  def test_rejects_command_block_parameters
-    diag = single_diagnostic("command :a do |x|\n  interactive\nend")
+  def test_rejects_reserved_command_parameter_name
+    diag = single_diagnostic("command :a do |t|\n  interactive\nend")
 
-    assert_match(/do not take parameters/, diag.message)
+    assert_match(/invalid command parameter name `t`/, diag.message)
+    assert_equal 1, diag.line
   end
 
   def test_rejects_nested_command

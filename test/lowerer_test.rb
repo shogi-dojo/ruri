@@ -30,7 +30,12 @@ class LowererTest < Minitest::Test
 
   def test_rejects_unknown_language_forms
     unknown = Data.define.new
-    command = Ruri::Forms::Command.new(source_name: "bad", name: "bad", body: [unknown])
+    command = Ruri::Forms::Command.new(
+      source_name: "bad",
+      name: "bad",
+      parameters: Ruri::Forms::ParameterList.new(required: [], optionals: [], rest: nil),
+      body: [unknown]
+    )
 
     error = assert_raises(ArgumentError) { Ruri::Lowerer.lower([command]) }
 

@@ -353,6 +353,41 @@
     (should (equal "a/2" (ruri-test-count "a" "b" "c")))
     (should (equal "a/0" (ruri-test-count "a")))))
 
+(ert-deftest ruri-test/command-parameters-and-interactive-specs-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri commands " t))
+         (source (expand-file-name "commands.ruri" dir)))
+    (with-temp-file source
+      (insert "command :ruri_test_echo_cmd do |count, punctuation = \"!\"|\n"
+              "  doc \"Insert COUNT and PUNCTUATION.\"\n"
+              "  interactive \"p\"\n"
+              "  el.insert(el.format(\"%d%s\", count, punctuation))\n"
+              "end\n\n"
+              "command :ruri_test_prefix_cmd do |raw_prefix|\n"
+              "  doc \"Insert the raw prefix argument.\"\n"
+              "  interactive \"P\"\n"
+              "  el.insert(el.format(\"%S\", raw_prefix))\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The interactive string spec feeds the command parameter; the
+    ;; optional punctuation default applies for the missing second arg.
+    (with-temp-buffer
+      (let ((current-prefix-arg nil))
+        (call-interactively #'ruri-test-echo-cmd))
+      (should (equal "1!" (buffer-string))))
+    (with-temp-buffer
+      (let ((current-prefix-arg 7))
+        (call-interactively #'ruri-test-echo-cmd))
+      (should (equal "7!" (buffer-string))))
+    ;; "P" passes the raw prefix argument through to the parameter.
+    (with-temp-buffer
+      (let ((current-prefix-arg '(4)))
+        (call-interactively #'ruri-test-prefix-cmd))
+      (should (equal "(4)" (buffer-string))))
+    (with-temp-buffer
+      (let ((current-prefix-arg nil))
+        (call-interactively #'ruri-test-prefix-cmd))
+      (should (equal "nil" (buffer-string))))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

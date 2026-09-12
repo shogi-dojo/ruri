@@ -26,7 +26,7 @@ module Ruri
     # Top-level command definition.
     # +source_name+ is the symbol as written; +name+ is the Emacs Lisp
     # name after `_` -> `-` conversion.
-    Command = Data.define(:source_name, :name, :body)
+    Command = Data.define(:source_name, :name, :parameters, :body)
     # Top-level noninteractive function with hygienic parameters.
     FunctionDefinition = Data.define(:source_name, :name, :parameters, :body)
 
@@ -56,8 +56,11 @@ module Ruri
     # Reading the dynamic value of an Emacs Lisp variable.
     VarRead = Data.define(:source_name, :name)
 
-    # The required first statement of every command body.
-    Interactive = Data.define
+    # The required first statement of every command body. +spec+ is the
+    # optional interactive specification: a string-literal expression form
+    # (as Emacs reads it, e.g. "P" for the raw prefix argument), or nil for
+    # a plain `(interactive)`.
+    Interactive = Data.define(:spec)
 
     # Documentation string. Only valid as the first statement of a command
     # or function body; lowers to a dedicated Elisp docstring node.

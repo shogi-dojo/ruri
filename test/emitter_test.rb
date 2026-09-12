@@ -92,7 +92,8 @@ class EmitterTest < Minitest::Test
     forms = [Ruri::Forms::Command.new(
       source_name: "octal_cmd",
       name: "octal-cmd",
-      body: [Ruri::Forms::Interactive.new, Ruri::Forms::Insert.new(text: text)]
+      parameters: Ruri::Forms::ParameterList.new(required: [], optionals: [], rest: nil),
+      body: [Ruri::Forms::Interactive.new(spec: nil), Ruri::Forms::Insert.new(text: text)]
     )]
 
     output = Ruri::Emitter.emit(forms, source_path: "test.ruri")
@@ -329,5 +330,21 @@ class EmitterTest < Minitest::Test
 
     assert_includes output, "(lambda (ruri--local-value &optional ruri--local-factor)"
     assert_includes output, "(unless ruri--local-factor\n          (setq ruri--local-factor 2))"
+  end
+
+  def test_emits_command_parameters_and_interactive_spec
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :jump_cmd do |location, raw_prefix = nil|
+        doc "Jump to LOCATION, honoring the raw prefix argument."
+        interactive "P"
+        el.message("%s %s", location, raw_prefix)
+      end
+    RURI
+
+    assert_includes output, <<~'ELISP'
+      (defun jump-cmd (ruri--local-location &optional ruri--local-raw-prefix)
+        "Jump to LOCATION, honoring the raw prefix argument."
+        (interactive "P")
+    ELISP
   end
 end
