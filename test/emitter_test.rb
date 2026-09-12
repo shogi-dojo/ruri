@@ -417,4 +417,33 @@ class EmitterTest < Minitest::Test
     (throw 'found-value 7))
     ELISP
   end
+
+  def test_emits_break_next_and_return_as_tagged_throws
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :exits do |cap|
+        doc "Sample exits."
+        total = 0
+        while total < cap
+          total = total + 1
+          break if total == 3
+        end
+        return total
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (catch 'ruri--return-1
+    (let (ruri--local-total)
+      (setq ruri--local-total 0)
+      (catch 'ruri--break-2
+        (while
+          (< ruri--local-total ruri--local-cap)
+          (setq ruri--local-total
+            (+ ruri--local-total 1))
+          (if
+            (equal ruri--local-total 3)
+            (throw 'ruri--break-2 nil))))
+      (throw 'ruri--return-1 ruri--local-total)))
+    ELISP
+  end
 end

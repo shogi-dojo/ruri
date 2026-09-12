@@ -464,6 +464,49 @@
     (should (= 2 (ruri-test-seek 4)))
     (should (eq 'none (ruri-test-seek 100)))))
 
+(ert-deftest ruri-test/break-next-and-return-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri exits " t))
+         (source (expand-file-name "exits.ruri" dir)))
+    (with-temp-file source
+      (insert "function :ruri_test_first_match do |threshold|\n"
+              "  doc \"Return the first item over THRESHOLD, or -1.\"\n"
+              "  list(3, 7, 11, 2).each do |item|\n"
+              "    if item > threshold\n"
+              "      return item\n"
+              "    end\n"
+              "  end\n"
+              "  -1\n"
+              "end\n\n"
+              "function :ruri_test_sum_until_cap do |cap|\n"
+              "  doc \"Sum 1, 2, 3, ... until the sum would pass CAP.\"\n"
+              "  total = 0\n"
+              "  count = 0\n"
+              "  while true\n"
+              "    count = count + 1\n"
+              "    break if total + count > cap\n"
+              "    total = total + count\n"
+              "  end\n"
+              "  total\n"
+              "end\n\n"
+              "function :ruri_test_skip_zeros do\n"
+              "  doc \"Total nonzero items.\"\n"
+              "  total = 0\n"
+              "  list(2, 0, 3, 0, 4).each do |item|\n"
+              "    next if item == 0\n"
+              "    total = total + item\n"
+              "  end\n"
+              "  total\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; return leaves the defun from inside an .each lambda.
+    (should (= 7 (ruri-test-first-match 6)))
+    (should (= -1 (ruri-test-first-match 99)))
+    ;; break ends the while loop before the cap is exceeded.
+    (should (= 10 (ruri-test-sum-until-cap 10)))
+    (should (= 6 (ruri-test-sum-until-cap 9)))
+    ;; next skips the zero items.
+    (should (= 9 (ruri-test-skip-zeros)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

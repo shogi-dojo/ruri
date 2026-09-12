@@ -128,6 +128,14 @@ module Ruri
     # forms rather than el.* calls (which would quote the tag wrongly).
     Catch = Data.define(:tag, :body)
     Throw = Data.define(:tag, :value)
+
+    # Loop exits and definition returns. All three lower to throws against
+    # compiler-generated catch tags: `break`/`next` target their enclosing
+    # loop, `return` targets the innermost definition body. +value+ is the
+    # optional carried expression; a bare exit throws nil.
+    Break = Data.define(:value)
+    Next = Data.define(:value)
+    Return = Data.define(:value)
     # Preserves an expression used for its value as a body form.
     ExpressionStatement = Data.define(:expression)
   end

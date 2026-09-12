@@ -10,6 +10,20 @@ module Ruri
       end
     end
 
+    # Nested loops and definitions allocate deterministic catch tags
+    # (ruri--break-1, ruri--return-2, ...) in lowering order; the stacks
+    # track which tag break/next/return currently throw to.
+    def initialize
+      @exit_tag_counter = 0
+      @break_tags = []
+      @next_tags = []
+      @return_tags = []
+    end
+
+    # Boundaries where an exit belongs to the inner construct: nested loops
+    # own their break/next, lambdas own their returns.
+    LOOP_EXIT_BOUNDARIES = [Forms::Lambda, Forms::Loop, Forms::Each].freeze
+
     def lower(definitions)
       definitions.map do |definition|
         case definition
@@ -31,10 +45,13 @@ module Ruri
     def lower_command(command)
       doc_form, statements = partition_docstring(command.body)
       interactive_form, *rest = statements
+      return_tag = enter_return_scope(command.body)
       lowered_rest = rest.map { |statement| lower_statement(statement) }
+      leave_return_scope(return_tag)
       locals = collect_locals(rest)
       lowered_rest = wrap_locals(locals, lowered_rest) unless locals.empty?
       lowered_rest = lower_parameter_defaults(command.parameters) + lowered_rest
+      lowered_rest = [catch_wrap(return_tag, lowered_rest)] if return_tag
 
       Elisp.list(
         Elisp.symbol("defun"),
@@ -48,10 +65,13 @@ module Ruri
 
     def lower_function_definition(function)
       doc_form, statements = partition_docstring(function.body)
+      return_tag = enter_return_scope(function.body)
       lowered = statements.map { |statement| lower_statement(statement) }
+      leave_return_scope(return_tag)
       locals = collect_locals(statements, [], function.parameters.names)
       lowered = wrap_locals(locals, lowered) unless locals.empty?
       lowered = lower_parameter_defaults(function.parameters) + lowered
+      lowered = [catch_wrap(return_tag, lowered)] if return_tag
 
       Elisp.list(
         Elisp.symbol("defun"),
@@ -59,6 +79,70 @@ module Ruri
         lower_parameter_list(function.parameters),
         *doc_form,
         *lowered
+      )
+    end
+
+    # `return` has no defun equivalent, so a body containing one (without
+    # crossing into a nested fn) is wrapped in `(catch 'ruri--return-N ...)`
+    # and each return throws to it. Bodies without returns emit unchanged.
+    # The tag is pushed before lowering so nested returns resolve to the
+    # innermost enclosing scope.
+    def enter_return_scope(body_forms)
+      return nil unless body_has_exit?(body_forms, Forms::Return, [Forms::Lambda])
+
+      tag = allocate_tag("return")
+      @return_tags.push(tag)
+      tag
+    end
+
+    def leave_return_scope(tag)
+      @return_tags.pop if tag
+    end
+
+    def body_has_exit?(statements, klass, boundaries)
+      statements.any? { |form| form_has_exit?(form, klass, boundaries) }
+    end
+
+    def form_has_exit?(form, klass, boundaries)
+      return true if form.instance_of?(klass)
+      return false if boundaries.any? { |boundary| form.instance_of?(boundary) }
+
+      case form
+      when Forms::Conditional
+        body_has_exit?(form.then_body, klass, boundaries) ||
+          body_has_exit?(form.else_body, klass, boundaries)
+      when Forms::Loop
+        body_has_exit?(form.body, klass, boundaries)
+      when Forms::Each
+        body_has_exit?(form.body, klass, boundaries)
+      when Forms::Rescue
+        body_has_exit?(form.body, klass, boundaries) ||
+          form.clauses.any? { |_, body| body_has_exit?(body, klass, boundaries) } ||
+          body_has_exit?(form.else_body, klass, boundaries)
+      when Forms::Ensure
+        body_has_exit?(form.body, klass, boundaries) ||
+          body_has_exit?(form.ensure_body, klass, boundaries)
+      when Forms::Catch
+        body_has_exit?(form.body, klass, boundaries)
+      when Forms::WithCurrentBuffer
+        body_has_exit?(form.body, klass, boundaries)
+      when Forms::Call
+        body_has_exit?(form.body, klass, boundaries)
+      else
+        false
+      end
+    end
+
+    def allocate_tag(kind)
+      @exit_tag_counter += 1
+      "ruri--#{kind}-#{@exit_tag_counter}"
+    end
+
+    def catch_wrap(tag, forms)
+      Elisp.list(
+        Elisp.symbol("catch"),
+        Elisp.quote(Elisp.symbol(tag)),
+        *forms
       )
     end
 
@@ -193,6 +277,8 @@ module Ruri
           collect_locals(statement.body, names, shadowed)
         when Forms::Throw
           collect_expression_locals(statement.value, names, shadowed)
+        when Forms::Break, Forms::Next, Forms::Return
+          collect_expression_locals(statement.value, names, shadowed) if statement.value
         when Forms::Call
           collect_expression_locals(statement, names, shadowed)
         when Forms::ExpressionStatement
@@ -286,15 +372,7 @@ module Ruri
       when Forms::Loop
         lower_loop(statement)
       when Forms::Each
-        Elisp.list(
-          Elisp.symbol("mapc"),
-          Elisp.list(
-            Elisp.symbol("lambda"),
-            Elisp.inline_list(Elisp.symbol(statement.parameter)),
-            *statement.body.map { |child| lower_statement(child) }
-          ),
-          lower_expression(statement.collection)
-        )
+        lower_each(statement)
       when Forms::Rescue
         lower_rescue(statement)
       when Forms::Ensure
@@ -303,6 +381,12 @@ module Ruri
         lower_catch(statement)
       when Forms::Throw
         lower_throw(statement)
+      when Forms::Break
+        lower_exit(statement, @break_tags.last)
+      when Forms::Next
+        lower_exit(statement, @next_tags.last)
+      when Forms::Return
+        lower_exit(statement, @return_tags.last)
       when Forms::ExpressionStatement
         lower_expression(statement.expression)
       when Forms::Assign
@@ -354,11 +438,15 @@ module Ruri
       when Forms::Keyword
         Elisp.symbol(expression.name)
       when Forms::Lambda
+        return_tag = enter_return_scope(expression.body)
+        lambda_body = expression.body.map { |statement| lower_statement(statement) }
+        leave_return_scope(return_tag)
+        lambda_body = [catch_wrap(return_tag, lambda_body)] if return_tag
         Elisp.list(
           Elisp.symbol("lambda"),
           lower_parameter_list(expression.parameters),
           *lower_parameter_defaults(expression.parameters),
-          *expression.body.map { |statement| lower_statement(statement) }
+          *lambda_body
         )
       when Forms::FunctionReference
         Elisp.list(
@@ -403,6 +491,16 @@ module Ruri
         Elisp.symbol("throw"),
         Elisp.quote(Elisp.symbol(throw_form.tag)),
         lower_expression(throw_form.value)
+      )
+    end
+
+    # break/next/return become throws against the current innermost tag;
+    # a bare exit carries nil because Elisp throw requires a value.
+    def lower_exit(statement, tag)
+      Elisp.list(
+        Elisp.symbol("throw"),
+        Elisp.quote(Elisp.symbol(tag)),
+        statement.value ? lower_expression(statement.value) : Elisp.symbol("nil")
       )
     end
 
@@ -500,14 +598,56 @@ module Ruri
       Elisp.list(*items)
     end
 
+    # Loops get catch tags only when their body (not crossing a nested
+    # loop or fn) actually contains break/next, so plain loops emit
+    # unchanged. `next` is caught per iteration; `break` unwinds the
+    # whole loop.
     def lower_loop(loop)
       condition = lower_expression(loop.condition)
       condition = Elisp.list(Elisp.symbol("not"), condition) if loop.negated
-      Elisp.list(
-        Elisp.symbol("while"),
-        condition,
-        *loop.body.map { |statement| lower_statement(statement) }
+      break_tag, next_tag = enter_loop_scopes(loop.body)
+      body = loop.body.map { |statement| lower_statement(statement) }
+      leave_loop_scopes(break_tag, next_tag)
+      body = [catch_wrap(next_tag, body)] if next_tag
+      loop_form = Elisp.list(Elisp.symbol("while"), condition, *body)
+      loop_form = catch_wrap(break_tag, [loop_form]) if break_tag
+      loop_form
+    end
+
+    def lower_each(each_form)
+      break_tag, next_tag = enter_loop_scopes(each_form.body)
+      lambda_body = each_form.body.map { |statement| lower_statement(statement) }
+      leave_loop_scopes(break_tag, next_tag)
+      lambda_body = [catch_wrap(next_tag, lambda_body)] if next_tag
+      lambda_form = Elisp.list(
+        Elisp.symbol("lambda"),
+        Elisp.inline_list(Elisp.symbol(each_form.parameter)),
+        *lambda_body
       )
+      mapc_form = Elisp.list(
+        Elisp.symbol("mapc"),
+        lambda_form,
+        lower_expression(each_form.collection)
+      )
+      mapc_form = catch_wrap(break_tag, [mapc_form]) if break_tag
+      mapc_form
+    end
+
+    def enter_loop_scopes(body)
+      break_tag = allocate_loop_tag(body, Forms::Break, "break")
+      next_tag = allocate_loop_tag(body, Forms::Next, "next")
+      @break_tags.push(break_tag) if break_tag
+      @next_tags.push(next_tag) if next_tag
+      [break_tag, next_tag]
+    end
+
+    def allocate_loop_tag(body, klass, kind)
+      body_has_exit?(body, klass, LOOP_EXIT_BOUNDARIES) ? allocate_tag(kind) : nil
+    end
+
+    def leave_loop_scopes(break_tag, next_tag)
+      @break_tags.pop if break_tag
+      @next_tags.pop if next_tag
     end
 
     def lower_branch(statements)

@@ -427,4 +427,59 @@ class LowererTest < Minitest::Test
     assert_equal "found-value", throw_node.items[1].value.name
     assert_equal 7, throw_node.items[2].value
   end
+
+  def test_break_and_next_allocate_deterministic_catch_tags
+    function = parse(<<~RURI).first
+      function :scan do
+        while true
+          break
+        end
+        list(1).each do |item|
+          next if item == 0
+          el.identity(item)
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    while_catch = lowered.items[3]
+    assert_equal "catch", while_catch.items.first.name
+    assert_equal "ruri--break-1", while_catch.items[1].value.name
+    mapc_form = lowered.items[4]
+    assert_equal "mapc", mapc_form.items.first.name
+    lambda_form = mapc_form.items[1]
+    next_catch = lambda_form.items[2]
+    assert_equal "catch", next_catch.items.first.name
+    assert_equal "ruri--next-2", next_catch.items[1].value.name
+  end
+
+  def test_return_wraps_the_defun_body_in_a_catch
+    function = parse(<<~RURI).first
+      function :early do
+        return 5
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    return_catch = lowered.items[3]
+    assert_equal "catch", return_catch.items.first.name
+    assert_equal "ruri--return-1", return_catch.items[1].value.name
+    throw_form = return_catch.items[2]
+    assert_equal "throw", throw_form.items.first.name
+    assert_equal "ruri--return-1", throw_form.items[1].value.name
+    assert_equal 5, throw_form.items[2].value
+  end
+
+  def test_loops_without_exits_emit_no_catch
+    function = parse(<<~RURI).first
+      function :plain do
+        while true
+          el.identity(1)
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    assert_equal "while", lowered.items[3].items.first.name
+  end
 end

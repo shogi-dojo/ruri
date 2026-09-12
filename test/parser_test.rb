@@ -987,6 +987,72 @@ end')
     assert_equal "ruri--local-limit", throw_form.value.name
   end
 
+  def test_parses_break_next_and_return
+    function = parse(<<~RURI).first
+      function :scan do |cap|
+        total = 0
+        while total < cap
+          total = total + 1
+          break if total == 3
+        end
+        list(1, 0, 2).each do |item|
+          next if item == 0
+        end
+        return total
+      end
+    RURI
+
+    loop_form = function.body[1]
+    assert_instance_of Ruri::Forms::Loop, loop_form
+    assert_instance_of Ruri::Forms::Break, loop_form.body.last.then_body.first
+    each_form = function.body[2]
+    assert_instance_of Ruri::Forms::Next, each_form.body.first.then_body.first
+    assert_instance_of Ruri::Forms::Return, function.body[3]
+    assert_equal "ruri--local-total", function.body[3].value.name
+  end
+
+  def test_rejects_break_outside_loop
+    diag = single_diagnostic(<<~RURI)
+      function :stray do
+        break
+      end
+    RURI
+
+    assert_match(/`break` cannot cross a fn boundary/, diag.message)
+    assert_equal 2, diag.line
+  end
+
+  def test_rejects_break_crossing_fn_boundary
+    diag = single_diagnostic(<<~RURI)
+      command :outer do
+        interactive
+        while true
+          callback = fn do
+            break
+          end
+          el.identity(callback)
+        end
+      end
+    RURI
+
+    assert_match(/`break` cannot cross a fn boundary/, diag.message)
+    assert_equal 5, diag.line
+  end
+
+  def test_rejects_exit_with_multiple_values
+    diags = diagnostics_of(<<~RURI)
+      command :multi do
+        interactive
+        while true
+          break 1, 2
+        end
+      end
+    RURI
+
+    assert_equal 1, diags.size
+    assert_match(/break takes at most one value/, diags[0].message)
+  end
+
   def test_rejects_malformed_catch_and_throw
     diags = diagnostics_of(<<~RURI)
       function :bad do

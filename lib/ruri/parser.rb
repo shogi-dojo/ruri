@@ -31,6 +31,9 @@ module Ruri
       @definitions = []
       @seen_names = {}
       @seen_variable_names = {}
+      # Lexical placement stack for break/next/return: :fn for definition
+      # and lambda bodies, :loop for while/until/each bodies.
+      @exit_scopes = []
     end
 
     def parse
@@ -209,7 +212,9 @@ module Ruri
       parameters = parse_block_parameters(node.block, "command")
       return unless parameters
 
-      body = with_local_scope(node.block, parameters.names) { parse_command_body(node.block) }
+      body = with_local_scope(node.block, parameters.names) do
+        with_exit_scope(:fn) { parse_command_body(node.block) }
+      end
       @definitions << Forms::Command.new(
         source_name: source_name,
         name: lisp_name,
@@ -253,7 +258,7 @@ module Ruri
         statements = statements[1..]
       end
       body = with_local_scope(node.block, parameters.names) do
-        parse_value_body(statements)
+        with_exit_scope(:fn) { parse_value_body(statements) }
       end
       body = [docstring] + body if docstring
       @definitions << Forms::FunctionDefinition.new(
@@ -729,12 +734,14 @@ module Ruri
     end
 
     # Statements handled structurally in every body context: locals,
-    # conditionals, loops, and begin/rescue blocks.
+    # conditionals, loops, begin/rescue blocks, and exit statements.
     def structured_statement?(node)
       node.is_a?(Prism::LocalVariableWriteNode) ||
         node.is_a?(Prism::IfNode) || node.is_a?(Prism::UnlessNode) ||
         node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode) ||
-        node.is_a?(Prism::BeginNode)
+        node.is_a?(Prism::BeginNode) ||
+        node.is_a?(Prism::BreakNode) || node.is_a?(Prism::NextNode) ||
+        node.is_a?(Prism::ReturnNode)
     end
 
     # `begin ... rescue [:cond, ...] [=> var] ... [else ...] end` lowers to
@@ -896,9 +903,70 @@ module Ruri
         parse_loop(node, negated: true)
       when Prism::BeginNode
         parse_begin_node(node)
+      when Prism::BreakNode
+        parse_break_statement(node)
+      when Prism::NextNode
+        parse_next_statement(node)
+      when Prism::ReturnNode
+        parse_return_statement(node)
       else
         unsupported(node)
       end
+    end
+
+    # `break`, `next`, and `return` lower to throws against
+    # compiler-generated catch tags. break/next must sit directly inside a
+    # loop in the same fn; crossing an fn boundary (a nested fn block)
+    # changes the target in Ruby and is rejected. return targets the
+    # innermost definition, matching Ruby's lambda semantics.
+    def parse_break_statement(node)
+      if (problem = exit_placement_error(node, "break"))
+        error(node.location, problem)
+      end
+      Forms::Break.new(value: parse_exit_value(node, "break"))
+    end
+
+    def parse_next_statement(node)
+      if (problem = exit_placement_error(node, "next"))
+        error(node.location, problem)
+      end
+      Forms::Next.new(value: parse_exit_value(node, "next"))
+    end
+
+    def parse_return_statement(node)
+      Forms::Return.new(value: parse_exit_value(node, "return"))
+    end
+
+    def parse_exit_value(node, name)
+      args = node.arguments&.arguments || []
+      if args.empty?
+        nil
+      elsif args.one?
+        parse_expression(args.first)
+      else
+        error(node.location, "#{name} takes at most one value")
+        nil
+      end
+    end
+
+    # Returns a diagnostic message when the exit statement's placement
+    # cannot be lowered, or nil when it is fine.
+    def exit_placement_error(_node, name)
+      nearest = @exit_scopes.reverse.find { |kind| kind == :loop || kind == :fn }
+      if nearest == :loop
+        nil
+      elsif nearest == :fn
+        "`#{name}` cannot cross a fn boundary; use it directly inside while, until, or each"
+      else
+        "`#{name}` is only allowed inside while, until, or each"
+      end
+    end
+
+    def with_exit_scope(kind)
+      @exit_scopes << kind
+      yield
+    ensure
+      @exit_scopes.pop
     end
 
     def parse_local_write(node)
@@ -953,7 +1021,9 @@ module Ruri
 
     def parse_loop(node, negated:)
       condition = parse_expression(node.predicate)
-      body = parse_buffer_statements(node.statements&.body || [])
+      body = with_exit_scope(:loop) do
+        parse_buffer_statements(node.statements&.body || [])
+      end
       return nil unless condition
 
       Forms::Loop.new(condition: condition, body: body, negated: negated)
@@ -983,7 +1053,9 @@ module Ruri
       previous_names = @local_names
       begin
         @local_names = ((@local_names || []) + parameters.names).uniq
-        body = parse_buffer_statements(node.block.body&.body || [])
+        body = with_exit_scope(:loop) do
+          parse_buffer_statements(node.block.body&.body || [])
+        end
       ensure
         @local_names = previous_names
       end
@@ -1229,7 +1301,9 @@ module Ruri
       previous_names = @local_names
       begin
         @local_names = ((@local_names || []) + parameters.names).uniq
-        body = parse_value_body(node.block.body&.body || [])
+        body = with_exit_scope(:fn) do
+          parse_value_body(node.block.body&.body || [])
+        end
       ensure
         @local_names = previous_names
       end
@@ -1561,7 +1635,9 @@ module Ruri
     def value_expression_statement?(node)
       return false if node.is_a?(Prism::LocalVariableWriteNode) ||
                       node.is_a?(Prism::IfNode) || node.is_a?(Prism::UnlessNode) ||
-                      node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode)
+                      node.is_a?(Prism::WhileNode) || node.is_a?(Prism::UntilNode) ||
+                      node.is_a?(Prism::BreakNode) ||
+                      node.is_a?(Prism::NextNode) || node.is_a?(Prism::ReturnNode)
       return true unless node.is_a?(Prism::CallNode)
       return false if node.name == :each && node.receiver
       return false if node.receiver.nil? &&
