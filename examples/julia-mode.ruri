@@ -1,0 +1,1083 @@
+# julia-mode.ruri — the julia-mode package (JuliaEditorSupport/julia-emacs)
+# converted to Ruri. Original: test/fixtures/julia-mode-original.el
+# (v1.1.0, MIT license preserved in test/fixtures/julia-mode-LICENSE.md).
+#
+# The conversion is semantic, not byte-identical. Deviations from the
+# original, each forced by a language gap, with the workaround used:
+#
+# 1. The generated julia-mode-latexsubs.el data file (~1000 LaTeX
+#    abbreviations) is not ported. A representative stub table (10 entries)
+#    is built at runtime; every consumer (partials table, completion,
+#    julia_latexsub_or_indent) runs over it unchanged.
+# 2. el.defgroup is rejected (name in unevaluated position), so the custom
+#    group is omitted; each defcustom passes `group: :languages` directly.
+# 3. el.defface is rejected (name in unevaluated position). The two faces
+#    are declared through el.custom_declare_face, the function defface
+#    expands to, whose face argument is an evaluated position.
+# 4. el.syntax_propertize_rules is rejected (whole rule forms unevaluated).
+#    The four rules are hand-implemented in julia__syntax_propertize, which
+#    is installed as the buffer's syntax-propertize-function.
+# 5. el.define_abbrev_table is rejected (its :parents keyword would arrive
+#    as a quoted symbol and be silently dropped). Tables are built with
+#    el.make_abbrev_table / el.define_abbrev and linked with
+#    el.abbrev_table_put. Keywords in evaluated positions use the typed
+#    `keyword` construct (make-hash-table's :test, abbrev-table-put's
+#    :parents).
+# 6. cond / when-let / if-let / cl-flet / cl-loop are rejected: rewritten
+#    as if/elsif chains, let + fn, and while loops. The two cl-flet
+#    accumulators are small enough to inline.
+# 7. Conditionals cannot appear in argument, initializer, or
+#    assignment-value position, so every `(if …)` used as a value is
+#    computed into a local first (julia_paren_indent,
+#    julia__beginning_of_defun, julia_mode__latexsub_before_point,
+#    julia_indent_line).
+# 8. A let binding cannot shadow a dynamic variable (locals are hygienic),
+#    so julia_fill_paragraph's `(let ((fill-paragraph-function nil)) …)`
+#    becomes an explicit save/restore wrapped in begin/ensure.
+# 9. The AUCTeX-gated block `(when (featurep 'latex) …)` is omitted:
+#    Ruri definitions are unconditional top-level forms, so julia-math-mode
+#    and julia-math-insert have no expressible gate.
+# 10. derived_mode keyword arguments are not expressible: the original's
+#     :abbrev-table keyword becomes an `assign_local :local_abbrev_table`
+#     in the body, and :group is dropped (customize UI only).
+# 11. All 16 rx forms are pre-expanded to literal regexp strings with batch
+#     Emacs, exactly as cmake-mode.ruri does.
+# 12. The `;;;###autoload` cookie and its top-level add-to-list registration
+#     are omitted (top-level expression statements are not expressible);
+#     users add .jl to auto-mode-alist, exactly as cmake-mode.ruri does.
+# 13. defsubst is rejected (no inlining semantics);
+#     julia_syntax_comment_or_string_p is a plain function.
+# 14. delete-backward-char is reserved for interactive use by the byte
+#     compiler, so its single use is expressed as el.delete_char with a
+#     negated count (same region deleted).
+
+require :cl_lib
+require :subr_x
+
+variable :julia_mode_hook, nil
+
+custom :julia_indent_offset, 4, "Number of spaces per indentation level.",
+       safe: function(:julia__indent_offset_safe), type: :integer, group: :languages
+
+function :julia__indent_offset_safe do |n|
+  n > 1 && n <= 8
+end
+
+custom :julia_force_tab_complete, true, "Use Tab for completion instead of M-Tab in `julia-mode'.\nThis overrides `tab-always-indent' in `julia-mode' buffers.",
+       type: :boolean, group: :languages
+
+custom :julia_automatic_latexsub, true, "After completing a LaTeX symbol, replace it with corresponding unicode.\n`ivy-mode' completion will not trigger automatic latexsub due to\nupstream bug: <https://github.com/abo-abo/swiper/issues/2345>.\n\nUser can still use `abbrev-mode' or `expand-abbrev' to substitute\nunicode for LaTeX even if disabled.",
+       type: :boolean, group: :languages
+
+custom :julia_latexsub_greedy, true, "When `t', `julia-latexsub-or-indent' does not offer options when a\ncomplete match is found. Eg for \"\\bar\", \"\\barcap\" etc will not be\noffered in a prompt.",
+       type: :boolean, group: :languages
+
+function :julia_latexsub_selector_completing_read do |replacements|
+  doc "Use `completing-read' to pick an item from REPLACEMENTS."
+  el.completing_read("LaTeX completions: ", replacements, fn do
+    true
+  end, true)
+end
+
+variable :julia_latexsub_selector, function(:julia_latexsub_selector_completing_read),
+         "A function that is called when the `julia-latexsub-or-indent' finds\nmultiple matches for a prefix.\n\nThe argument is a list of strings. The function should ALWAYS return\nan item from this list, otherwise an error occurs.\n\nThe default implementation uses `completing-read'."
+
+# Stub for the generated julia-mode-latexsubs.el data file (deviation 1):
+# a representative subset of the LaTeX substitution table. Top-level
+# expression statements are not expressible, so the tables are built by
+# functions and installed through the variable initializers.
+function :julia__make_latexsubs do
+  doc "Build the LaTeX substitution table (stub for the generated data file)."
+  table = el.make_hash_table(keyword(:test), function(:equal))
+  el.puthash("\\alpha", "α", table)
+  el.puthash("\\beta", "β", table)
+  el.puthash("\\gamma", "γ", table)
+  el.puthash("\\in", "∈", table)
+  el.puthash("\\notin", "∉", table)
+  el.puthash("\\le", "≤", table)
+  el.puthash("\\ge", "≥", table)
+  el.puthash("\\ne", "≠", table)
+  el.puthash("\\times", "×", table)
+  el.puthash("\\infty", "∞", table)
+  table
+end
+
+variable :julia_mode_latexsubs, el.julia__make_latexsubs,
+         "Hash table mapping \"\\latex\" strings to their unicode substitutions."
+
+function :julia__make_latexsub_abbrev_table do
+  doc "Build the abbrev table for LaTeX substitutions."
+  table = el.make_abbrev_table
+  el.define_abbrev(table, "alpha", "α")
+  el.define_abbrev(table, "beta", "β")
+  el.define_abbrev(table, "gamma", "γ")
+  el.define_abbrev(table, "in", "∈")
+  el.define_abbrev(table, "notin", "∉")
+  el.define_abbrev(table, "le", "≤")
+  el.define_abbrev(table, "ge", "≥")
+  el.define_abbrev(table, "ne", "≠")
+  el.define_abbrev(table, "times", "×")
+  el.define_abbrev(table, "infty", "∞")
+  table
+end
+
+variable :julia_latexsub_abbrev_table, el.julia__make_latexsub_abbrev_table,
+         "Abbrev table mapping LaTeX names to their unicode substitutions."
+
+function :julia__make_latexsubs_partials do
+  doc "Build the partial-match table over `julia-mode-latexsubs'."
+  let do |table_unordered = el.make_hash_table(keyword(:test), function(:equal)),
+          table_ordered = el.make_hash_table(keyword(:test), function(:equal))|
+    el.maphash(fn do |latex, _unicode|
+      # cl-assert from the original: every key starts with a backslash.
+      el.cl_assert(el.equal(el.substring(latex, 0, 1), "\\"), nil,
+                   "LaTeX substitution does not start with \\.")
+      len = el.length(latex)
+      el.cl_assert(len > 1, nil, "Trivially short LaTeX substitution")
+      # for \foo, put \f, \fo, \foo into the table (the original uses
+      # cl-loop for i from 2 to len).
+      i = 2
+      while i <= len
+        el.puthash(el.substring(latex, 0, i),
+                   el.cons(latex, el.gethash(el.substring(latex, 0, i), table_unordered, nil)),
+                   table_unordered)
+        i = i + 1
+      end
+    end, var(:julia_mode_latexsubs))
+    el.maphash(fn do |partial, replacements|
+      el.puthash(partial, el.sort(replacements, function(:string_lessp)), table_ordered)
+    end, table_unordered)
+    table_ordered
+  end
+end
+
+constant :julia_mode__latexsubs_partials, el.julia__make_latexsubs_partials,
+         "A hash table containing all partial strings from the LaTeX\nabbreviations in `julia-mode-latexsubs' as keys. Values are sorted\nlists of complete \"\\some_string\"."
+
+function :julia_mode__latexsubs_longest_partial_end do |beg_pos|
+  doc "Starting at `beg' (should be the  \"\\\"), return the end of the longest\npartial match for LaTeX completion, or `nil' when not applicable."
+  el.save_excursion do
+    el.goto_char(beg_pos)
+    if el.char_after() == 92 && !el.eobp
+      beg_inner = el.point
+      el.forward_char
+      next_matches = fn do
+        end_pos = el.point + 1
+        str = el.buffer_substring_no_properties(beg_inner, end_pos)
+        el.gethash(str, var(:julia_mode__latexsubs_partials))
+      end
+      while !el.eobp && el.funcall(next_matches)
+        el.forward_char
+      end
+      el.point
+    end
+  end
+end
+
+# defface is rejected (deviation 3); custom-declare-face is the function it
+# expands to and its face argument is evaluated, so the generic path's
+# quote is right. Declared from the mode body because top-level expression
+# statements are not expressible.
+function :julia__declare_faces do
+  doc "Declare the mode's faces."
+  el.custom_declare_face(:julia_macro_face,
+                         list(list(:t, list(keyword(:inherit), :font_lock_preprocessor_face))),
+                         "Face for Julia macro invocations.",
+                         keyword(:group), :languages)
+  el.custom_declare_face(:julia_quoted_symbol_face,
+                         list(list(:t, list(keyword(:inherit), :font_lock_constant_face))),
+                         "Face for quoted Julia symbols, e.g. :foo.",
+                         keyword(:group), :languages)
+  nil
+end
+
+function :julia__make_syntax_table do
+  doc "Build the Julia syntax table."
+  let do |table = el.make_syntax_table|
+    # Ruri has no character literals; Emacs characters are integers.
+    el.modify_syntax_entry(95, "_", table)
+    el.modify_syntax_entry(64, "_", table)
+    # "!" can be part of both operators (!=) and variable names (append!).
+    el.modify_syntax_entry(33, "_", table)
+    el.modify_syntax_entry(35, "< 14", table)
+    el.modify_syntax_entry(61, ". 23bn", table)
+    el.modify_syntax_entry(10, ">", table)
+    el.modify_syntax_entry(123, "(} ", table)
+    el.modify_syntax_entry(125, "){ ", table)
+    el.modify_syntax_entry(91, "(] ", table)
+    el.modify_syntax_entry(93, ")[ ", table)
+    el.modify_syntax_entry(40, "() ", table)
+    el.modify_syntax_entry(41, ")( ", table)
+    el.modify_syntax_entry(39, ".", table)
+    el.modify_syntax_entry(34, "\"", table)
+    el.modify_syntax_entry(96, "\"", table)
+    el.modify_syntax_entry(92, "\\", table)
+    el.modify_syntax_entry(46, ".", table)
+    el.modify_syntax_entry(63, ".", table)
+    el.modify_syntax_entry(36, ".", table)
+    el.modify_syntax_entry(38, ".", table)
+    el.modify_syntax_entry(42, ".", table)
+    el.modify_syntax_entry(47, ".", table)
+    el.modify_syntax_entry(43, ".", table)
+    el.modify_syntax_entry(45, ".", table)
+    el.modify_syntax_entry(60, ".", table)
+    el.modify_syntax_entry(62, ".", table)
+    el.modify_syntax_entry(37, ".", table)
+    el.modify_syntax_entry(8242, "w", table)
+    table
+  end
+end
+
+constant :julia_mode_syntax_table, el.julia__make_syntax_table,
+         "Syntax table for `julia-mode'."
+
+# Regexp constants. The original builds these with the rx macro; Ruri
+# cannot express rx, so each form was pre-expanded with batch Emacs
+# (deviation 11).
+
+# (rx (or (any "-" ";" "\\" "^" "!" "|" "?" "*" "<" "%" "," "=" ">" "+"
+#          "/" "&" "$" "~" ":") (syntax open-parenthesis) (syntax whitespace) bol)
+#     (group "'") (or (not (any "\\")) (seq "\\" (or ...))) (group "'"))
+constant :julia_char_regex, "\\(?:[!$-&*--/:-?\\^|~]\\|\\s(\\|\\s-\\|^\\)\\('\\)\\(?:[^\\]\\|\\\\\\(?:[\"'\\abfnrtv]\\|[0-7]\\{1,3\\}\\|x[[:xdigit:]]\\{1,2\\}\\|u[[:xdigit:]]\\{1,4\\}\\|U[[:xdigit:]]\\{1,8\\}\\)\\)\\('\\)"
+
+# (rx (or "?" "=" "..." "::" ".") (* blank) (or eol ?#)) — taken from
+# julia-parser.scm.
+constant :julia_hanging_operator_regexp, "\\(?:!==?\\|\\$=\\|%=\\|&[&=]\\|\\*=\\|\\+[+=]\\|-\\(?:->\\|[=-]\\)\\|\\.\\(?:!=\\|%=\\|\\*=\\|\\+=\\|-=\\|/\\(?:/=\\|[/=]\\)\\|<[<=]\\|==\\|>\\(?:>>\\|[=>]\\)\\|[\\÷^]=\\|[!%*+./<=>\\÷≠≤≥^-]\\)\\|/\\(?:/=\\|[/=]\\)\\|:[:=]\\|<\\(?:<=\\|[:<=|]\\)\\|=\\(?:==\\|[=>]\\)\\|>\\(?:>\\(?:>=\\|[=>]\\)\\|[:=>]\\)\\|\\\\=\\|\\^=\\||[=>|]\\|÷=\\|[$%&*+./:<-?\\|~±×÷⅋←-↔↚↛↠↣↦↮⇎⇏⇒⇔⇴-⇿∈-∍∓∔∗∘∙∝∤-∪∷∸∺∻∽∾≀-⊋⊍-⊜⊞-⊣⊩⊬⊮⊰-⊷⊻⊼⊽⋄-⋇⋉-⋓⋕-⋭⋲-⋿▷⟈⟉⟑⟒⟕⟖⟗⟰⟱⟵⟶⟷⟹-⟿⤀-⤘⤝-⤠⥄-⥰⦷⦸⦼⦾-⧁⧡⧣⧤⧥⧴⧶⧷⧺⧻⨇⨈⨝⨢-⨮⨰-⨽⩀-⩅⩊-⩘⩚-⩣⩦⩧⩪-⫙⫛⫷-⫺⬰-⭄⭇-⭌￩-￬^-]\\)[[:blank:]]*\\(?:$\\|#\\)"
+
+constant :julia_unquote_regex, "\\(\\s(\\|\\s-\\|-\\|[,%=<>\\+*/?&|!\\^~\\\\;:]\\|^\\)\\($[a-zA-Z0-9_]+\\)"
+
+constant :julia_forloop_in_regex, "for +.*[^\n].* \\(in\\)\\(\\s-\\|$\\)+"
+
+# (rx "for" (1+ ? ) (1+ (not (any ?\n ?\; ?=))) (group (any ?= ?∈)) (not (any ?=)))
+# (the original's name contains `=`, which Ruri symbol names cannot carry;
+# the constant is renamed to julia__forloop_eq_regex)
+constant :julia__forloop_eq_regex, "for +[^\n;=]+\\([=∈]\\)[^=]"
+
+constant :julia_ternary_regex, " +\\(\\?\\)[\n ]+[^\n]* +\\(:\\)[\n ]+"
+
+# (rx line-start (* (or space "@inline" "@noinline")) symbol-start "function"
+#     (1+ space) (* (seq (1+ (or word (syntax symbol))) "."))
+#     (group (1+ (or word (syntax symbol)))))
+constant :julia_function_regex, "^\\(?:[[:space:]]\\|@inline\\|@noinline\\)*\\_<function[[:space:]]+\\(?:\\(?:[[:word:]]\\|\\s_\\)+\\.\\)*\\(\\(?:[[:word:]]\\|\\s_\\)+\\)"
+
+# functions of form "f(x) = nothing"
+constant :julia_function_assignment_regex, "^\\(?:[[:space:]]\\|@inline\\|@noinline\\)*\\_<\\(?:\\(?:[[:word:]]\\|\\s_\\)+\\.\\)*\\(\\(?:[[:word:]]\\|\\s_\\)+\\)(\\(?:([^()]*)\\|[^()]\\)*)[[:space:]]*\\(?:::[[:space:]]*[^[:space:]]+\\)?[[:space:]]*\\(?:where\\(?:{\\|[[:space:]]+\\)[^=]+\\)*=[^=]"
+
+# TODO from the original: function definitions of form "x + y = 5" or
+# "!x = true" not currently highlighted.
+
+constant :julia_type_regex, "\\_<\\(?:abstract type\\|mutable struct\\|primitive type\\|struct\\)[[:space:]]+\\(\\(?:[[:word:]]\\|\\s_\\)+\\)"
+
+constant :julia_const_def_regex, "\\_<const[[:space:]]+\\(\\_<[^z-a]+?\\_>\\)[[:space:]]*="
+
+constant :julia_type_annotation_regex, "::[[:space:]]*\\(\\(?:[[:word:]]\\|\\s_\\)+\\)"
+
+constant :julia_subtype_regex, "<:[[:space:]]*\\(\\(?:[[:word:]]\\|\\s_\\)+\\)[[:space:]]*\\(?:end\\|[\n,{}]\\)"
+
+constant :julia_macro_regex, "\\_<!*\\(@\\(?:[[:word:]]\\|\\s_\\)+\\)"
+
+constant :julia_keyword_regex, el.regexp_opt(
+  list(
+    "if", "else", "elseif", "while", "for", "begin", "end", "quote",
+    "try", "catch", "return", "local", "function", "macro",
+    "finally", "break", "continue", "global", "where",
+    "module", "using", "import", "export", "const", "let", "do",
+    "baremodule", "public",
+    "abstract type", "primitive type", "struct", "mutable struct"
+  ),
+  :symbols
+)
+
+constant :julia_quoted_symbol_regex, "\\(?:^\\|[(,=[[:space:]]\\)\\(:\\(?:[[:alpha:]]\\|\\s_\\)\\(?:[[:word:]]\\|\\s_\\)*\\)"
+
+# font-lock-builtin-face intentionally unused since any name from
+# names(Base) can be aliased in a baremodule.
+constant :julia_font_lock_keywords,
+         el.list(
+           el.list(var(:julia_quoted_symbol_regex), 1, quote(:julia_quoted_symbol_face)),
+           el.cons(var(:julia_keyword_regex), :font_lock_keyword_face),
+           el.list(var(:julia_macro_regex), 1, quote(:julia_macro_face)),
+           el.cons(el.regexp_opt(
+                     list("true", "false", "Cvoid", "Inf", "NaN", "Inf32", "NaN32", "nothing", "undef", "missing"),
+                     :symbols
+                   ), :font_lock_constant_face),
+           el.cons("ccall", :font_lock_builtin_face),
+           el.list(var(:julia_unquote_regex), 2, :font_lock_constant_face),
+           el.list(var(:julia_forloop_in_regex), 1, :font_lock_keyword_face),
+           el.list(var(:julia__forloop_eq_regex), 1, :font_lock_keyword_face),
+           el.list(var(:julia_ternary_regex), list(1, :font_lock_keyword_face), list(2, :font_lock_keyword_face)),
+           el.list(var(:julia_function_regex), 1, :font_lock_function_name_face),
+           el.list(var(:julia_function_assignment_regex), 1, :font_lock_function_name_face),
+           el.list(var(:julia_type_regex), 1, :font_lock_type_face),
+           el.list(var(:julia_const_def_regex), 1, :font_lock_variable_name_face),
+           el.list(var(:julia_type_annotation_regex), 1, :font_lock_type_face),
+           el.list(var(:julia_subtype_regex), 1, :font_lock_type_face)
+         )
+
+constant :julia_block_start_keywords,
+         list("if", "while", "for", "begin", "try", "function", "let", "macro",
+              "quote", "do", "module", "baremodule",
+              "abstract type", "primitive type", "struct", "mutable struct")
+
+# For keywords that begin a block without additional indentation
+constant :julia_block_start_keywords_no_indent, list("module", "baremodule")
+
+constant :julia_block_end_keywords, list("end", "else", "elseif", "catch", "finally")
+
+function :julia_syntax_comment_or_string_p do |syntax_ppss = nil|
+  doc "Return non-nil if SYNTAX-PPSS is inside string or comment."
+  el.nth(8, syntax_ppss || el.syntax_ppss)
+end
+
+function :julia_in_comment do |syntax_ppss = nil|
+  doc "Return non-nil if point is inside a comment using SYNTAX-PPSS.\nHandles both single-line and multi-line comments."
+  el.nth(4, syntax_ppss || el.syntax_ppss)
+end
+
+function :julia_in_string do |syntax_ppss = nil|
+  doc "Return non-nil if point is inside a string using SYNTAX-PPSS.\nNote this is Emacs' notion of what is highlighted as a string.\nAs a result, it is true inside \"foo\", `foo` and \\='f\\='."
+  el.nth(3, syntax_ppss || el.syntax_ppss)
+end
+
+# The original builds this with syntax-propertize-rules; Ruri rejects that
+# macro (whole rule forms unevaluated), so the four rules are implemented
+# by hand (deviation 4).
+function :julia__syntax_propertize do |start_pos, end_pos|
+  doc "Hand-rolled equivalent of the original syntax-propertize-rules form."
+  el.save_excursion do
+    el.goto_char(start_pos)
+    while el.re_search_forward("\"\"\"", end_pos, true)
+      el.julia_syntax_stringify
+    end
+    el.goto_char(start_pos)
+    while el.re_search_forward("```", end_pos, true)
+      el.julia_syntax_stringify
+    end
+    el.goto_char(start_pos)
+    while el.re_search_forward("\\\\", end_pos, true)
+      unless el.julia_in_string(el.save_excursion do
+        el.syntax_ppss(el.match_beginning(0))
+      end)
+        el.put_text_property(el.match_beginning(0), el.match_end(0),
+                             keyword(:syntax_table), el.string_to_syntax("."))
+      end
+    end
+    el.goto_char(start_pos)
+    while el.re_search_forward(var(:julia_char_regex), end_pos, true)
+      el.put_text_property(el.match_beginning(1), el.match_end(1),
+                           keyword(:syntax_table), el.string_to_syntax("\""))
+      el.put_text_property(el.match_beginning(2), el.match_end(2),
+                           keyword(:syntax_table), el.string_to_syntax("\""))
+    end
+  end
+end
+
+function :julia_syntax_stringify do
+  doc "Put `syntax-table' property correctly on triple-quoted strings and cmds."
+  let do |ppss = el.save_excursion do
+          el.syntax_ppss(el.match_beginning(0))
+        end,
+        # boolean operators are not allowed in let initializers, and both
+        # operands are pure, so the generic and call is equivalent here
+        string_open = el.and(el.not(el.nth(4, ppss)), el.nth(8, ppss))|
+    if !string_open
+      # this set of quotes delimit the start of string/cmd
+      el.put_text_property(el.match_beginning(0), el.match_beginning(0) + 1,
+                           keyword(:syntax_table), el.string_to_syntax("|"))
+    elsif el.eq(el.char_before(), el.char_after(string_open)) && el.julia__triple_quote_unescaped()
+      # this set of quotes closes the current string/cmd
+      el.put_text_property(el.match_end(0) - 1, el.match_end(0),
+                           keyword(:syntax_table), el.string_to_syntax("|"))
+    else
+      # Put point after (match-beginning 0) to account for possibility
+      # of overlapping triple-quotes with first escaped
+      el.backward_char(2)
+    end
+  end
+end
+
+# The escape-counting let + while that guarded the closing-quote branch of
+# julia-syntax-stringify in the original.
+function :julia__triple_quote_unescaped do
+  i = 0
+  while el.point_min < el.match_beginning(0) - i &&
+        el.eq(el.char_before(el.match_beginning(0) - i), 92)
+    i = i + 1
+  end
+  el.cl_evenp(i)
+end
+
+function :julia_in_brackets do
+  doc "Return non-nil if point is inside square brackets."
+  start_pos = el.point
+  open_count = 0
+  el.save_excursion do
+    el.beginning_of_line
+    while el.point < start_pos
+      # Don't count [ or ] inside strings, characters or comments.
+      unless el.julia_syntax_comment_or_string_p()
+        if el.looking_at("[")
+          el.cl_incf(open_count)
+        end
+        if el.looking_at("]")
+          el.cl_decf(open_count)
+        end
+      end
+      el.forward_char(1)
+    end
+  end
+  # If we've opened more than we've closed, we're inside brackets.
+  el.cl_plusp(open_count)
+end
+
+function :julia_at_keyword do |kw_list|
+  doc "Return the word at point if it matches any keyword in KW-LIST.\nKW-LIST is a list of strings.  The word at point is not considered\na keyword if used as a field name, X.word, or quoted, :word."
+  if !el.bobp
+    prev = el.char_before(el.point)
+    if prev == 46 || prev == 58
+      return nil
+    end
+  end
+  # handle "function(" when on (
+  if el.looking_at("(")
+    return nil
+  end
+  word = el.current_word(true)
+  # 'end' is not a keyword when used for indexing, e.g. foo[end-2]
+  if !el.member(word, kw_list)
+    return nil
+  end
+  if el.equal(word, "end") && el.julia_in_brackets()
+    return nil
+  end
+  if el.julia_in_comment()
+    return nil
+  end
+  el.member(word, kw_list)
+end
+
+# if backward-sexp gives an error, move back 1 char to move over the '('
+function :julia_safe_backward_sexp do
+  ok = begin
+    el.backward_sexp
+  rescue
+    true
+  end
+  if ok
+    el.ignore_errors do
+      el.backward_char
+    end
+  end
+end
+
+function :julia_following_import_export_using do
+  doc "If the current line follows an `export`, `import`, `using`, or\n`public` keyword with valid syntax, return the position of the keyword,\notherwise `nil`. Works by stepping backwards through comma-separated\nsymbol, gives up when this is not true."
+  # Implementation accepts a single Module: right after the keyword, and saves
+  # the module name for future use, but does not enforce that `export` has no
+  # module name.
+  done = nil
+  mod = nil
+  el.save_excursion do
+    el.beginning_of_line
+    while !done && el.point_min < el.point
+      el.julia_safe_backward_sexp()
+      if el.looking_at(el.regexp_opt(list("import", "export", "using", "public")))
+        done = el.point
+      elsif el.looking_at("\\(?:\\(\\(?:[[:word:]]\\|\\s_\\)*\\)[[:space:]]*:\\)")
+        if mod
+          done = :broken
+        else
+          mod = el.match_string_no_properties(1)
+        end
+      elsif el.looking_at("\\(?:\\(?:[[:word:]]\\|\\s_\\)*[[:space:]]*,\\)")
+        if mod
+          done = :broken
+        end
+      elsif el.looking_at("\\(?:\\(?:[[:word:]]\\|\\s_\\)*\\.\\)")
+        mod = el.concat(el.match_string_no_properties(0), mod)
+      else
+        done = :broken
+      end
+    end
+  end
+  if el.eq(done, :broken)
+    nil
+  else
+    done
+  end
+end
+
+function :julia_last_open_block_pos do |min_pos|
+  doc "Return the position of the last open block, if one found.\nDo not move back beyond position MIN."
+  el.save_excursion do
+    nesting_count = 0
+    while nesting_count <= 0 && min_pos < el.point
+      el.julia_safe_backward_sexp()
+      if el.julia_at_keyword(var(:julia_block_start_keywords))
+        nesting_count = nesting_count + 1
+      elsif el.julia_at_keyword(quote(list("end")))
+        nesting_count = nesting_count - 1
+      end
+    end
+    if nesting_count > 0
+      el.point
+    end
+  end
+end
+
+function :julia_last_open_block do |min_pos|
+  doc "Move back and return indentation level for last open block.\nDo not move back beyond MIN."
+  # Ensure MIN is not before the start of the buffer.
+  min_pos = el.max(min_pos, el.point_min)
+  pos = el.julia_last_open_block_pos(min_pos)
+  if pos
+    el.goto_char(pos)
+    var(:julia_indent_offset) + el.julia_block_open_indentation()
+  end
+end
+
+function :julia_block_open_indentation do
+  doc "Get the current indentation or the start of a parenthetical block."
+  el.save_excursion do
+    el.save_restriction do
+      # narrow to one line to only search syntax on that line
+      el.narrow_to_region(el.line_beginning_position, el.line_end_position)
+      begin
+        el.backward_up_list
+        el.current_column + 1
+      rescue
+        el.current_indentation
+      end
+    end
+  end
+end
+
+custom :julia_max_block_lookback, 20000, "When indenting, don't look back more than this many characters\nto see if there are unclosed blocks.\n\nThis variable has a small effect on indent performance if set\ntoo high, but stops indenting in the middle of long blocks if set\ntoo low.",
+       type: :integer, group: :languages
+
+function :julia_paren_indent do
+  doc "Return the column of the text following the innermost\ncontaining paren before point, so we can align succeeding code\nwith it. Returns nil if we're not within nested parens."
+  result = nil
+  el.save_excursion do
+    el.beginning_of_line
+    parser_state = el.syntax_ppss
+    unless el.nth(3, parser_state) || el.nth(0, parser_state) == 0
+      answer = nil
+      el.ignore_errors do
+        el.beginning_of_line
+        el.skip_syntax_forward(" ")
+        possibly_close_paren_point = el.point
+        el.backward_up_list
+        open_paren_point = el.point
+        el.forward_char
+        el.skip_syntax_forward(" ")
+        if el.eolp
+          el.up_list
+          el.backward_char
+          paren_closed = el.point == possibly_close_paren_point
+          el.goto_char(open_paren_point)
+          el.beginning_of_line
+          el.skip_syntax_forward(" ")
+          # (if paren-closed 0 julia-indent-offset) computed into a local:
+          # conditionals cannot appear in argument position (deviation 7).
+          delta = 0
+          if !paren_closed
+            delta = var(:julia_indent_offset)
+          end
+          answer = el.current_column + delta
+        else
+          answer = el.current_column
+        end
+      end
+      result = answer
+    end
+  end
+  result
+end
+
+function :julia_prev_line_skip_blank_or_comment do
+  doc "Move point to beginning of previous line skipping blank lines\nand lines including only comments. Returns number of lines moved.\nA return of -1 signals that we moved to the first line of\nthe (possibly narrowed) buffer, so there is nowhere else to go."
+  catch(:result) do
+    moved = 0
+    while true
+      this_move = el.forward_line(-1)
+      if this_move == 0 && (el.looking_at_p("^\\s-*\\(?:#.*\\)*$") || el.julia_in_comment())
+        # moved into comment or blank
+        el.cl_incf(moved)
+      elsif this_move == 0
+        # success
+        throw :result, moved + 1
+      elsif el.bobp && (el.looking_at_p("^\\s-*\\(?:#.*\\)*$") || el.julia_in_comment())
+        # on first line and in comment
+        throw :result, -1
+      elsif el.bobp
+        throw :result, moved
+      else
+        throw :result, 0
+      end
+    end
+  end
+end
+
+function :julia__hanging_operator_p do
+  doc "Return t if current line ends with a hanging operator."
+  el.re_search_forward(var(:julia_hanging_operator_regexp), el.line_end_position, true) &&
+    !el.julia_syntax_comment_or_string_p(el.save_excursion do
+      el.syntax_ppss(el.match_beginning(0))
+    end)
+end
+
+function :julia_indent_hanging do
+  doc "Calculate indentation for lines that follow \"hanging\"\noperators (operators that end the previous line) as defined in\n`julia-hanging-operator-regexp'. An assignment operator ending\nthe previous line increases the indent as do the other operators\nunless another operator is found two lines up. Previous line\nmeans previous line after skipping blank lines and lines with\nonly comments."
+  result = nil
+  el.save_excursion do
+    if el.julia_prev_line_skip_blank_or_comment() > 0
+      prev_indent = el.current_indentation
+      if el.julia__hanging_operator_p()
+        if el.julia_prev_line_skip_blank_or_comment() > 0 && el.julia__hanging_operator_p()
+          # two preceding hanging operators => indent same as line above
+          result = prev_indent
+        else
+          # one preceding hanging operator => increase indent from line above
+          result = var(:julia_indent_offset) + prev_indent
+        end
+      end
+    end
+  end
+  result
+end
+
+function :julia_indent_import_export_using do
+  doc "Indent offset for lines that follow `import` or `export`, otherwise nil."
+  if el.julia_following_import_export_using()
+    var(:julia_indent_offset)
+  end
+end
+
+command :julia_indent_line do
+  doc "Indent current line of julia code."
+  interactive
+  in_string = el.save_excursion do
+    el.beginning_of_line
+    el.julia_in_string()
+  end
+  # The original returns 'noindent for string lines; the value is unused by
+  # the indent-line-function dispatch, so the guard is a plain unless here.
+  unless in_string
+    point_offset = el.current_column - el.current_indentation
+    hanging = el.julia_indent_hanging()
+    import_export = el.julia_indent_import_export_using()
+    paren_indent = el.julia_paren_indent() || 0
+    block_indent = el.save_excursion do
+      el.beginning_of_line
+      state = el.syntax_ppss
+      # jump out of any comments
+      if el.nth(4, state)
+        el.goto_char(el.nth(8, state))
+      end
+      el.forward_to_indentation(0)
+      endtok = el.julia_at_keyword(var(:julia_block_end_keywords))
+      last_open_block = el.julia_last_open_block(el.point - var(:julia_max_block_lookback))
+      subtract = 0
+      if endtok || el.julia_at_keyword(var(:julia_block_start_keywords_no_indent))
+        # subtract indentation if we're at the end of a block
+        subtract = var(:julia_indent_offset)
+      end
+      el.max(paren_indent, (last_open_block || paren_indent) - subtract)
+    end
+    el.indent_line_to(hanging || import_export || block_indent)
+    # Point is now at the beginning of indentation, restore it
+    # to its original position (relative to indentation).
+    if point_offset >= 0
+      el.move_to_column(el.current_indentation + point_offset)
+    end
+  end
+end
+
+command :julia_fill_paragraph do |justify, region|
+  doc "`fill-paragraph-function' in julia-mode"
+  interactive "P"
+  # The original let-binds fill-paragraph-function dynamically to nil so
+  # recursive fill-paragraph calls use the default filler. Ruri locals are
+  # hygienic and cannot shadow a dynamic variable, so save and restore it
+  # around an ensure (deviation 8).
+  saved_fpf = var(:fill_paragraph_function)
+  assign :fill_paragraph_function, nil
+  begin
+    if region
+      el.fill_paragraph(justify, region)
+    # in strings, only consider the line containing the first
+    # non-whitespace character in the string up until the closing quote
+    # (not including it or its indentation).
+    elsif el.julia_in_string()
+      str_start = el.nth(8, el.syntax_ppss)
+      str_fill_start = el.save_excursion do
+        el.goto_char(str_start)
+        el.skip_syntax_forward(" \"|>")
+        el.beginning_of_line
+        el.point
+      end
+      str_inner_end = el.save_excursion do
+        el.goto_char(str_start)
+        el.forward_sexp
+        el.skip_syntax_backward(" \"|")
+        el.point
+      end
+      el.save_restriction do
+        el.narrow_to_region(str_fill_start, str_inner_end)
+        el.fill_paragraph(justify)
+      end
+    elsif el.julia_in_comment()
+      el.fill_comment_paragraph(justify)
+    else
+      el.fill_paragraph(justify, region)
+    end
+  ensure
+    assign :fill_paragraph_function, saved_fpf
+  end
+end
+
+# Navigation
+# based off python.el
+constant :julia_beginning_of_defun_regex,
+         el.concat(var(:julia_function_regex), "\\|",
+                   var(:julia_function_assignment_regex), "\\|",
+                   "\\_<macro\\_>"),
+         "Regex matching beginning of Julia function or macro."
+
+function :julia_syntax_context_type do |syntax_ppss = nil|
+  doc "Return the context type using SYNTAX-PPSS.\nTYPE can be `comment', `string' or `paren'."
+  ppss = syntax_ppss || el.syntax_ppss
+  if el.nth(8, ppss)
+    if el.nth(4, ppss)
+      :comment
+    else
+      :string
+    end
+  elsif el.nth(1, ppss)
+    :paren
+  end
+end
+
+function :julia_looking_at_beginning_of_defun do |syntax_ppss = nil|
+  doc "Check if point is at `beginning-of-defun' using SYNTAX-PPSS."
+  !el.julia_syntax_comment_or_string_p(syntax_ppss || el.syntax_ppss) &&
+    el.save_excursion do
+      el.beginning_of_line(1)
+      el.looking_at(var(:julia_beginning_of_defun_regex))
+    end
+end
+
+function :julia__beginning_of_defun do |arg = nil|
+  doc "Internal implementation of `julia-beginning-of-defun'.\nWith positive ARG search backwards, else search forwards."
+  if !arg || arg == 0
+    arg = 1
+  end
+  re_search_fn = function(:re_search_backward)
+  if !(arg > 0)
+    re_search_fn = function(:re_search_forward)
+  end
+  line_beg_pos = el.line_beginning_position
+  line_content_start = line_beg_pos + el.current_indentation
+  pos = el.point_marker
+  beg_indentation = nil
+  if arg > 0
+    # f(x) = ... function bodies may span multiple lines
+    el.save_excursion do
+      while true
+        if el.julia_looking_at_beginning_of_defun()
+          break
+        end
+        advanced = false
+        if el.julia_indent_hanging()
+          el.forward_line(-1)
+          advanced = true
+        # inside dangling parameter list
+        elsif el.eq(:paren, el.julia_syntax_context_type())
+          el.backward_up_list
+          advanced = true
+        elsif el.julia_last_open_block(el.point_min)
+          advanced = true
+        end
+        unless advanced
+          break
+        end
+      end
+    end
+    if el.julia_looking_at_beginning_of_defun()
+      beg_indentation = el.current_indentation + var(:julia_indent_offset)
+    else
+      beg_indentation = 0
+    end
+  end
+  if arg < 0 && el.julia_looking_at_beginning_of_defun()
+    el.end_of_line(1)
+  end
+  # handle nested defuns when moving backwards by checking indentation
+  go = el.funcall(re_search_fn, var(:julia_beginning_of_defun_regex), nil, true) &&
+       (el.julia_syntax_comment_or_string_p() ||
+        arg > 0 && el.current_indentation != 0 && el.current_indentation >= beg_indentation)
+  while go
+    go = el.funcall(re_search_fn, var(:julia_beginning_of_defun_regex), nil, true) &&
+         (el.julia_syntax_comment_or_string_p() ||
+          arg > 0 && el.current_indentation != 0 && el.current_indentation >= beg_indentation)
+  end
+  found = el.julia_looking_at_beginning_of_defun() &&
+          (el.line_number_at_pos(pos) != el.line_number_at_pos() ||
+           el.point >= line_beg_pos && el.point <= line_content_start && pos > line_content_start)
+  result = nil
+  if found
+    result = el.beginning_of_line(1) || el.point
+  else
+    el.goto_char(pos)
+  end
+  result
+end
+
+function :julia_beginning_of_defun do |arg = nil|
+  doc "Move point to `beginning-of-defun'.\nWith positive ARG search backwards else search forward.\nARG nil or 0 defaults to 1.  When searching backwards,\nnested defuns are handled depending on current point position.\nReturn non-nil (point) if point moved to `beginning-of-defun'."
+  if !arg || arg == 0
+    arg = 1
+  end
+  found = nil
+  while arg != 0
+    keep_searching_p = el.julia__beginning_of_defun(arg)
+    if keep_searching_p && !found
+      found = true
+    end
+    if !keep_searching_p
+      break
+    end
+    if arg > 0
+      arg = arg - 1
+    else
+      arg = arg + 1
+    end
+  end
+  found
+end
+
+command :julia_end_of_defun do
+  doc "Move point to the end of the current function.\nReturn nil if point is not in a function, otherwise point."
+  interactive
+  found = el.julia_looking_at_beginning_of_defun() || el.julia_beginning_of_defun(1) ||
+          el.julia_beginning_of_defun(-1)
+  if found
+    el.beginning_of_line
+    if el.looking_at_p(var(:julia_function_assignment_regex))
+      # f(x) = ... — skip any dangling lines
+      go = el.forward_line() && !el.eobp &&
+           (el.julia_indent_hanging() ||
+            el.eq(:paren, el.julia_syntax_context_type()) && el.search_forward(")"))
+      while go
+        go = el.forward_line() && !el.eobp &&
+             (el.julia_indent_hanging() ||
+              el.eq(:paren, el.julia_syntax_context_type()) && el.search_forward(")"))
+      end
+    else
+      # otherwise skip forward to matching indentation (not in string/comment)
+      beg_defun_indent = el.current_indentation
+      go = !el.eobp && el.forward_line(1) &&
+           (el.julia_syntax_comment_or_string_p() || el.current_indentation > beg_defun_indent)
+      while go
+        go = !el.eobp && el.forward_line(1) &&
+             (el.julia_syntax_comment_or_string_p() || el.current_indentation > beg_defun_indent)
+      end
+    end
+    el.end_of_line
+    el.point
+  end
+end
+
+# abbrev
+
+function :julia__make_mode_abbrev_table do
+  doc "Build the Julia mode abbrev table, inheriting the LaTeX table."
+  table = el.make_abbrev_table
+  el.abbrev_table_put(table, keyword(:parents), list(var(:julia_latexsub_abbrev_table)))
+  table
+end
+
+constant :julia_mode_abbrev_table, el.julia__make_mode_abbrev_table, "Abbrev table for Julia mode."
+
+# IMENU
+# don't use syntax classes, screws egrep
+constant :julia_imenu_generic_expression,
+         quasiquote(
+           list(
+             list("Function", unquote(var(:julia_function_regex)), 1),
+             list("Function", unquote(var(:julia_function_assignment_regex)), 1),
+             list("Const", unquote(var(:julia_const_def_regex)), 1),
+             list("Type", unquote(var(:julia_type_regex)), 1),
+             list("Require", " *\\(\\brequire\\)(\\([^ \t\n)]*\\)", 2),
+             list("Include", " *\\(\\binclude\\)(\\([^ \t\n)]*\\)", 2)
+           )
+         )
+
+# Mode definition. The original's :abbrev-table keyword is expressed as an
+# assign_local of local-abbrev-table in the body; :group is dropped
+# (deviation 10).
+derived_mode :julia_mode, :prog_mode, "Julia" do
+  doc "Major mode for editing julia code."
+  el.julia__declare_faces()
+  el.set_syntax_table(var(:julia_mode_syntax_table))
+  assign_local :comment_start, "# "
+  assign_local :comment_start_skip, "#+\\s-*"
+  assign_local :font_lock_defaults, quote(list(:julia_font_lock_keywords))
+  assign_local :syntax_propertize_function, function(:julia__syntax_propertize)
+  assign_local :indent_line_function, function(:julia_indent_line)
+  assign_local :beginning_of_defun_function, function(:julia_beginning_of_defun)
+  assign_local :end_of_defun_function, function(:julia_end_of_defun)
+  assign_local :fill_paragraph_function, function(:julia_fill_paragraph)
+  # If completion before point has higher priority than around, \lamb
+  # can get completed to \lambdamb
+  el.add_hook(:completion_at_point_functions,
+              function(:julia_mode_latexsub_completion_at_point_before), nil, true)
+  el.add_hook(:completion_at_point_functions,
+              function(:julia_mode_latexsub_completion_at_point_around), nil, true)
+  if var(:julia_force_tab_complete)
+    assign_local :tab_always_indent, :complete
+  end
+  assign :indent_tabs_mode, nil
+  assign :imenu_generic_expression, var(:julia_imenu_generic_expression)
+  el.imenu_add_to_menubar("Imenu")
+  assign_local :local_abbrev_table, var(:julia_mode_abbrev_table)
+  # The original binds <backtab> at load with a top-level define-key; the
+  # binding is idempotent, so the mode body is its home here.
+  el.define_key(var(:julia_mode_map), el.kbd("<backtab>"), function(:julia_manual_deindent))
+end
+
+command :julia_manual_deindent do
+  doc "Deindent by `julia-indent-offset' regardless of current\nindentation context. To be used to manually indent inside\nstrings."
+  interactive
+  el.indent_line_to(el.max(0, el.current_indentation - var(:julia_indent_offset)))
+end
+
+# (See Julia issue #8947 for why we don't use the Emacs tex input mode.)
+function :julia__latexsub_start_symbol do
+  doc "Determine the start location for LaTeX-like symbol at point.\nIf there is not a LaTeX-like symbol at point, return nil."
+  result = nil
+  el.save_excursion do
+    # move backward until character can't be part of LaTeX, whitespace or beginning of file
+    while !(el.bobp || el.char_before() == 92 ||
+            # Checks char not in whitespace, comment, or escape. This works better than checking
+            # char is in word constituents (?w) because things like "\^(", "\1/", and "\^=)" are
+            # valid.
+            el.member(el.char_syntax(el.char_before()), list(32, 60, 62, 92)))
+      el.backward_char
+    end
+    if !el.bobp && el.char_before() == 92
+      result = el.point - 1
+    end
+  end
+  result
+end
+
+# Sometimes you want to complete a symbol `point' is in middle of
+function :julia_mode_latexsub_completion_at_point_around do
+  doc "Return completion for LaTeX-like symbol around point.\nSuitable for use in `completion-at-point-functions'."
+  beg_pos = el.julia__latexsub_start_symbol()
+  if beg_pos
+    end_pos = el.julia_mode__latexsubs_longest_partial_end(beg_pos)
+    buffer_symbol = el.buffer_substring(beg_pos, end_pos)
+    # Depending on `completion-styles', completion may try to complete
+    # e.g. "\hat_mean" to "\hat". This predicate ensures that any completion candidates
+    # must start with "\hat_mean".
+    pred = fn do |candidate, _candidate_completion|
+      buffer_symbol == el.substring(candidate, 0, el.min(el.length(candidate), el.length(buffer_symbol)))
+    end
+    el.julia__latexsub_capf_list(beg_pos, end_pos, pred)
+  end
+end
+
+# Sometimes you want to complete a symbol point is at end of (with no space after)
+function :julia_mode_latexsub_completion_at_point_before do
+  doc "Return completion for LaTeX-like symbol before point.\nSuitable for use in `completion-at-point-functions'."
+  beg_pos = el.julia__latexsub_start_symbol()
+  if beg_pos
+    el.julia__latexsub_capf_list(beg_pos, el.point, nil)
+  end
+end
+
+function :julia__latexsub_capf_list do |beg_pos, end_pos, pred|
+  doc "Return list suitable for use in `completion-at-point-functions' of latexsubs."
+  el.list(beg_pos, end_pos, var(:julia_mode_latexsubs), keyword(:exclusive), :no,
+          keyword(:annotation_function), fn do |s|
+            el.concat(" ", el.gethash(s, var(:julia_mode_latexsubs)))
+          end,
+          keyword(:exit_function), el.julia__latexsub_exit_function(beg_pos),
+          keyword(:predicate), pred)
+end
+
+function :julia__latexsub_exit_function do |beg_pos|
+  doc "Return function to be used as `completion-extra-properties' `:exit-function'.\nWhen `julia-automatic-latexsub' is non-nil, returned function will\nsubstitute LaTeX symbols when called with a LaTeX string from before\n`point' and the symbol `finished'. BEG is the point in the current\nbuffer where the LaTeX symbol starts."
+  if var(:julia_automatic_latexsub)
+    # `julia--latexsub-exit-function' returns a lambda in order to close over BEG which
+    # would otherwise have to be recalculated.
+    fn do |name, status|
+      # `ivy-mode' always calls `:exit-function' with `sole' and not `finished' (see
+      # <https://github.com/abo-abo/swiper/issues/2345>). Instead of automatic
+      # expansion, user can either enable `abbrev-mode' or call `expand-abbrev'.
+      if el.eq(status, :finished)
+        # helm-mode passes NAME with an extra whitespace at the end. Since
+        # `julia--latexsub-start-symbol' won't include whitespace, we can safely
+        # strip whitespace.
+        clean_name = el.string_trim_right(name)
+        symb = el.abbrev_symbol(clean_name, var(:julia_latexsub_abbrev_table))
+        if symb
+          end_pos = beg_pos + el.length(clean_name)
+          el.abbrev_insert(symb, name, beg_pos, end_pos)
+        end
+      end
+    end
+  else
+    function(:ignore)
+  end
+end
+
+function :julia_mode__latexsub_before_point do
+  doc "When there is a LaTeX substitution that can be made before the point,\nreturn (CONS BEG LATEX).\n\n`beg' is the position of the `\\`, `latex' is the string to replace,\nincluding the `\\`.\n\nWhen multiple options match, ask the user to clarify via\n`julia-latexsub-selector', unless there is a complete match and\n`julia-latexsub-greedy' is `t'."
+  result = nil
+  beg_pos = el.julia__latexsub_start_symbol()
+  if beg_pos
+    partial = el.buffer_substring_no_properties(beg_pos, el.point)
+    replacements = el.gethash(partial, var(:julia_mode__latexsubs_partials))
+    if replacements
+      complete_match = el.member(partial, replacements)
+      latex = nil
+      if complete_match && var(:julia_latexsub_greedy)
+        # complete match w/ greedy
+        latex = partial
+      elsif el.cdr(replacements)
+        # multiple replacements, ask user
+        latex = el.funcall(var(:julia_latexsub_selector), replacements)
+      else
+        # single replacement, pick that
+        latex = el.car(replacements)
+      end
+      result = el.cons(beg_pos, latex)
+    end
+  end
+  result
+end
+
+command :julia_latexsub_or_indent do
+  doc "Either indent according to Julia mode conventions or perform a\nLaTeX-like symbol substution.\n\nWhen multiple options match, ask the user to clarify via\n`julia-latexsub-selector', unless there is a complete match and\n`julia-latexsub-greedy' is `t'.\n\nPresently, this is not the default. Enable with eg\n\n(define-key julia-mode-map (kbd \"TAB\")\n      \\='julia-latexsub-or-indent)\n\neg in your `julia-mode-hook'."
+  interactive "*i"
+  replacement = el.julia_mode__latexsub_before_point()
+  if replacement
+    # delete-char with a negative count deletes backwards; the original
+    # uses delete-backward-char, which the byte compiler reserves for
+    # interactive use.
+    el.delete_char(el.car(replacement) - el.point)
+    el.insert(el.gethash(el.cdr(replacement), var(:julia_mode_latexsubs)))
+  else
+    el.julia_indent_line()
+  end
+end
+
+# Math insertion in julia. The original gates julia-math-mode on
+# (featurep 'latex) — AUCTeX — at load time; Ruri definitions are
+# unconditional top-level forms, so that block is omitted (deviation 9).
+
+provide :julia_mode
