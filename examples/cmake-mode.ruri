@@ -15,8 +15,9 @@
 #    passes characters (rx data, modify-syntax-entry), the port uses integer
 #    code points or one-character strings, which the same Elisp functions
 #    accept.
-# 3. Ruri symbol literals must match [a-z][a-z0-9_]*, so the rx operator
-#    symbol `*` is built at runtime with el.intern("*").
+# 3. (Resolved on review: the rx operator symbol `*` is writable directly
+#    as the Ruri literal `:*` — inside quoted and quasiquoted data it emits
+#    `*` unquoted, so no runtime el.intern is needed.)
 # 4. `if`/`unless` are not expressions in argument or initializer position,
 #    so conditionals that the original inlines into a let* initializer or
 #    call argument are computed into locals first.
@@ -61,10 +62,10 @@ constant :cmake_regex_argument_quoted, "\"\\(?:[^\"\\]\\|\\\\[^z-a]\\)*\""
 # Pre-expanded from the rx unquoted-argument form in the original.
 constant :cmake_regex_argument_unquoted, "\\(?:[^\n\"#()\\[:space:]]\\|\\\\.\\)\\(?:[^\n#()\\[:space:]]\\|\\\\.\\)*"
 constant :cmake_regex_token, el.rx_to_string(quasiquote(list(:group, list(:or, list(:regexp, unquote(var(:cmake_regex_comment))), 40, 41, list(:regexp, unquote(var(:cmake_regex_argument_unquoted))), list(:regexp, unquote(var(:cmake_regex_argument_quoted)))))))
-constant :cmake_regex_indented, el.rx_to_string(quasiquote(list(:and, :bol, list(unquote(el.intern("*")), list(:group, list(:or, list(:regexp, unquote(var(:cmake_regex_token))), list(:any, :space, 10)))))))
+constant :cmake_regex_indented, el.rx_to_string(quasiquote(list(:and, :bol, list(:*, list(:group, list(:or, list(:regexp, unquote(var(:cmake_regex_token))), list(:any, :space, 10)))))))
 constant :cmake_regex_block_open, el.rx_to_string(quasiquote(list(:and, :symbol_start, list(:or, splice(el.append(var(:cmake_keywords_block_open), el.mapcar(function(:downcase), var(:cmake_keywords_block_open))))), :symbol_end)))
 constant :cmake_regex_block_close, el.rx_to_string(quasiquote(list(:and, :symbol_start, list(:or, splice(el.append(var(:cmake_keywords_block_close), el.mapcar(function(:downcase), var(:cmake_keywords_block_close))))), :symbol_end)))
-constant :cmake_regex_close, el.rx_to_string(quasiquote(list(:and, :bol, list(unquote(el.intern("*")), :space), list(:regexp, unquote(var(:cmake_regex_block_close))), list(unquote(el.intern("*")), :space), list(:regexp, unquote(var(:cmake_regex_paren_left))))))
+constant :cmake_regex_close, el.rx_to_string(quasiquote(list(:and, :bol, list(:*, :space), list(:regexp, unquote(var(:cmake_regex_block_close))), list(:*, :space), list(:regexp, unquote(var(:cmake_regex_paren_left))))))
 constant :cmake_regex_token_paren_left, el.concat("^", var(:cmake_regex_paren_left))
 constant :cmake_regex_token_paren_right, el.concat("^", var(:cmake_regex_paren_right))
 
