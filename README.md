@@ -328,6 +328,22 @@ comments are not expressible in the language, and generated files carry
 Ruri's own provenance header. `test/byte_identity_test.rb` asserts the
 byte equality after dropping comment-only lines from both files.
 
+## Real package ports
+
+Two complete package conversions live under `examples/`, each preserving
+its original under `test/fixtures/`:
+
+- `org-fragtog.ruri` — the 254-line MELPA package, converted with the real
+  `mode` construct (its one-time `define-minor-mode` emulation is gone).
+- `cmake-mode.ruri` — Kitware's 522-line `cmake-mode.el` (BSD 3-Clause),
+  a `derived_mode` from `prog-mode` with a hand-ported indentation engine,
+  font-lock keyword template, syntax table, and the full help subsystem.
+  Its header documents every Ruri gap the port surfaced (rx macro forms,
+  character literals, conditional expressions in argument position, dynamic
+  let-bindings, top-level executable forms, and `syntax-propertize-rules`)
+  together with the workarounds used, so the gap list is traceable
+  construct by construct.
+
 ## Converting real packages
 
 Beyond the byte-identical `greet` demo, `examples/org-fragtog.ruri` is a
