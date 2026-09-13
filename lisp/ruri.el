@@ -157,7 +157,7 @@ never a stale `.elc'."
 (defvar ruri-font-lock-keywords
   (list
    (cons
-    "\\<\\(assign\\|catch\\|command\\|constant\\|custom\\|doc\\|fn\\|function\\|interactive\\|let\\|provide\\|quasiquote\\|quote\\|require\\|splice\\|throw\\|unquote\\|variable_local\\|var\\)\\>"
+    "\\<\\(assign\\|catch\\|command\\|cons\\|constant\\|custom\\|doc\\|fn\\|function\\|insert\\|interactive\\|keyword\\|let\\|list\\|provide\\|quasiquote\\|quote\\|require\\|splice\\|throw\\|unquote\\|variable_local\\|variable\\|var\\|with_current_buffer\\)\\>"
     'font-lock-keyword-face)
    (cons "\\<el\\>" 'font-lock-builtin-face))
   "Ruri vocabulary highlighted by `ruri-mode' in addition to Ruby's.

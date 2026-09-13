@@ -683,6 +683,46 @@
                         'font-lock-builtin-face)))
         (kill-buffer)))))
 
+(ert-deftest ruri-test/font-lock-covers-the-documented-vocabulary ()
+  "Every top-level Ruri construct highlights as a keyword.
+Sampling a couple of names previously let `variable' ship unhighlighted
+while `variable_local' next to it was fenced, so check the whole set."
+  (let* ((dir (make-temp-file "ruri vocabulary " t))
+         (source (expand-file-name "vocabulary.ruri" dir)))
+    (with-temp-file source
+      (insert "require :seq\n"
+              "provide :vocabulary\n"
+              "variable :a, 1, \"D.\"\n"
+              "variable_local :b, 2, \"D.\"\n"
+              "constant :c, 3, \"D.\"\n"
+              "custom :d, 4, \"D.\", group: :tools\n"
+              "command :e do\n"
+              "  interactive\n"
+              "  with_current_buffer(\"*x*\") do\n"
+              "    insert(\"hi\")\n"
+              "  end\n"
+              "  assign :a, list(cons(1, 2), keyword(:begin), quote(list(:q)))\n"
+              "end\n"))
+    (with-current-buffer (find-file-noselect source)
+      (unwind-protect
+          (progn
+            (font-lock-ensure)
+            ;; `require' and `quote' are Ruby's own keywords, so ruby-mode
+            ;; fontifies them first; any highlighting face is fine there.
+            (dolist (name '("provide" "variable" "variable_local"
+                            "constant" "custom" "command" "interactive"
+                            "with_current_buffer" "insert" "assign" "list"
+                            "cons" "keyword"))
+              (goto-char (point-min))
+              (should (re-search-forward (concat "\\_<" (regexp-quote name) "\\_>") nil t))
+              (should (eq (get-text-property (match-beginning 0) 'face)
+                          'font-lock-keyword-face)))
+            (goto-char (point-min))
+            (should (re-search-forward "\\_<require\\_>" nil t))
+            (should (memq (get-text-property (match-beginning 0) 'face)
+                          '(font-lock-keyword-face font-lock-builtin-face))))
+        (kill-buffer)))))
+
 (ert-deftest ruri-test/failed-compilation-navigates-via-next-error ()
   (let* ((dir (make-temp-file "ruri navigation " t))
          (source (expand-file-name "broken.ruri" dir)))
