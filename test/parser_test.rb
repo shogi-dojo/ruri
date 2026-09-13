@@ -1676,7 +1676,9 @@ end')
       "define_minor_mode" => "use the mode form",
       "define_globalized_minor_mode" => "globalized modes",
       "define_derived_mode" => "use the derived_mode form",
-      "define_generic_mode" => "generic modes"
+      "define_generic_mode" => "generic modes",
+      "rx" => "rx forms",
+      "syntax_propertize_rules" => "syntax-propertize rules"
     }
 
     names.each do |name, hint|

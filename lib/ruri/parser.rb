@@ -57,7 +57,9 @@ module Ruri
       "define-minor-mode" => "use the mode form",
       "define-globalized-minor-mode" => "Ruri cannot express globalized modes; write the mode in Elisp and require it",
       "define-derived-mode" => "use the derived_mode form",
-      "define-generic-mode" => "Ruri cannot express generic modes; write the mode in Elisp and require it"
+      "define-generic-mode" => "Ruri cannot express generic modes; write the mode in Elisp and require it",
+      "rx" => "Ruri cannot express rx forms; pass a regexp string, or use el.rx_to_string over quoted data",
+      "syntax-propertize-rules" => "Ruri cannot express syntax-propertize rules; write them in Elisp and require them"
     }.freeze
 
     # Emacs Lisp place-taking operators routed into the typed

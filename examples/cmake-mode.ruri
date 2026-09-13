@@ -7,7 +7,8 @@
 # from source-level fidelity, each a Ruri gap recorded for the next phase:
 #
 # 1. `rx` macro forms are not expressible (their sub-forms are unevaluated
-#    and Ruri has no character literals). Static rx forms were pre-expanded
+#    and Ruri has no character literals); el.rx is rejected at compile
+#    time rather than miscompiling. Static rx forms were pre-expanded
 #    to the equivalent literal regexp strings; the dynamic alternations are
 #    still computed at runtime with el.rx_to_string over a quasiquote with
 #    splices, exactly as the original does.
@@ -31,7 +32,8 @@
 #    omitted (users add CMakeLists.txt/*.cmake to auto-mode-alist
 #    themselves or through package.el's generated autoloads).
 # 7. cmake--syntax-propertize-function relies on the syntax-propertize-rules
-#    macro (unevaluated rule forms). Bracket-argument/comment syntax
+#    macro (unevaluated rule forms), now rejected at compile time rather
+#    than miscompiling. Bracket-argument/comment syntax
 #    propertization #[[...]] is therefore omitted; highlighting and
 #    indentation work without it.
 #

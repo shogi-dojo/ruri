@@ -110,7 +110,10 @@ everything else is rejected with a source position.
   `custom`); `el.cl_defstruct`; and the mode definitions `el.define_minor_mode`
   (use `mode`) and `el.define_derived_mode` (use `derived_mode`).
   `el.define_globalized_minor_mode` and `el.define_generic_mode` remain
-  rejected with no Ruri equivalent. Evaluated-name forms are deliberately not on
+  rejected with no Ruri equivalent. The same rule covers macros whose
+  whole body is unevaluated: `el.rx` (pass a regexp string, or build one
+  at runtime with `el.rx_to_string` over quoted data) and
+  `el.syntax_propertize_rules` (no Ruri equivalent). Evaluated-name forms are deliberately not on
   this list: `el.defalias`'s first argument is evaluated, so the quote a
   symbol literal receives is exactly correct. The place-taking
   operators `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf`
