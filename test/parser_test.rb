@@ -1662,7 +1662,20 @@ end')
       "cl_destructuring_bind" => "destructuring",
       "seq_let" => "destructuring",
       "when_let" => "if",
-      "if_let" => "if"
+      "if_let" => "if",
+      "defun" => "function or command",
+      "defconst" => "constant",
+      "defvar" => "variable or variable_local",
+      "defvar_local" => "variable_local",
+      "defcustom" => "custom",
+      "defmacro" => "Ruri cannot define macros",
+      "defsubst" => "defsubst inlining",
+      "cl_defun" => "function or command",
+      "cl_defstruct" => "cl-defstruct records",
+      "define_minor_mode" => "write the mode in Elisp",
+      "define_globalized_minor_mode" => "write the mode in Elisp",
+      "define_derived_mode" => "write the mode in Elisp",
+      "define_generic_mode" => "write the mode in Elisp"
     }
 
     names.each do |name, hint|
@@ -1676,6 +1689,21 @@ end')
       assert_match(/takes bindings or names in unevaluated positions/, diags.first.message)
       assert_includes diags.first.message, hint
     end
+  end
+
+  def test_el_defalias_still_compiles_its_evaluated_name
+    # defalias takes its name as an evaluated argument, so the quote a
+    # symbol literal gets is exactly right and must stay off the
+    # unevaluated-position rejection table.
+    definitions = parse(<<~RURI)
+      function :aliasing do
+        el.defalias(:my_alias, function(:identity))
+      end
+    RURI
+
+    call = definitions.first.body.first
+    assert_instance_of Ruri::Forms::Call, call
+    assert_equal "defalias", call.name
   end
 
   def test_rejects_unevaluated_position_calls_at_any_arity

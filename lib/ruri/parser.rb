@@ -23,6 +23,13 @@ module Ruri
     # arguments are emitted as evaluated calls and the generated Elisp
     # fails only at runtime, so each name is rejected at compile time
     # with a pointer to the Ruri construct that covers it.
+    #
+    # Admission rule: the form's first argument is a name or symbol in an
+    # unevaluated position, so the quote a symbol literal gets under the
+    # generic call path (el.foo(:bar) -> (foo 'bar)) breaks or silently
+    # miscompiles it. Every entry was verified in batch Emacs with the
+    # quoted name before admission; evaluated-name forms such as
+    # el.defalias (whose quoted symbol is correct) stay off the table.
     UNEVALUATED_POSITION_CALLS = {
       "let" => "use the Ruri let form",
       "let-star" => "use the Ruri let form; it binds sequentially",
@@ -36,7 +43,20 @@ module Ruri
       "cl-destructuring-bind" => "Ruri cannot express destructuring patterns",
       "seq-let" => "Ruri cannot express destructuring patterns",
       "when-let" => "bind with the Ruri let form and branch with if",
-      "if-let" => "bind with the Ruri let form and branch with if"
+      "if-let" => "bind with the Ruri let form and branch with if",
+      "defun" => "use function or command",
+      "defconst" => "use constant",
+      "defvar" => "use variable or variable_local",
+      "defvar-local" => "use variable_local",
+      "defcustom" => "use custom",
+      "defmacro" => "Ruri cannot define macros; write the macro in Elisp and require it",
+      "defsubst" => "use function; Ruri cannot express defsubst inlining",
+      "cl-defun" => "use function or command",
+      "cl-defstruct" => "Ruri cannot express cl-defstruct records",
+      "define-minor-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it",
+      "define-globalized-minor-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it",
+      "define-derived-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it",
+      "define-generic-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it"
     }.freeze
 
     # Emacs Lisp place-taking operators routed into the typed
