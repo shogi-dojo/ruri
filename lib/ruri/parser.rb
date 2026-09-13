@@ -29,6 +29,8 @@ module Ruri
       "setq" => "use assign(:name, value)",
       "dolist" => "use collection.each do |item| ... end",
       "cl-dolist" => "use collection.each do |item| ... end",
+      "dotimes" => "use count.times do |i| ... end",
+      "cl-dotimes" => "use count.times do |i| ... end",
       "pcase" => "Ruri cannot express pcase patterns; use conditionals",
       "cl-loop" => "Ruri cannot express cl-loop clauses; use while, each, or let",
       "cl-destructuring-bind" => "Ruri cannot express destructuring patterns",

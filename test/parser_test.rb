@@ -1645,6 +1645,39 @@ end')
                  diags[2].message)
   end
 
+  def test_rejects_every_documented_unevaluated_position_call
+    # The contract (docs/language.md) promises each of these is rejected at
+    # compile time. Sampling a few names previously let el.dotimes ship
+    # unrejected, so assert the whole table.
+    names = {
+      "let" => "the Ruri let form",
+      "let_star" => "the Ruri let form",
+      "setq" => "assign",
+      "dolist" => "each",
+      "cl_dolist" => "each",
+      "dotimes" => "times",
+      "cl_dotimes" => "times",
+      "pcase" => "conditionals",
+      "cl_loop" => "while, each, or let",
+      "cl_destructuring_bind" => "destructuring",
+      "seq_let" => "destructuring",
+      "when_let" => "if",
+      "if_let" => "if"
+    }
+
+    names.each do |name, hint|
+      diags = diagnostics_of(<<~RURI)
+        function :probe do |x|
+          el.#{name}(x)
+        end
+      RURI
+
+      assert_equal 1, diags.size, "el.#{name} must be rejected"
+      assert_match(/takes bindings or names in unevaluated positions/, diags.first.message)
+      assert_includes diags.first.message, hint
+    end
+  end
+
   def test_rejects_unevaluated_position_calls_at_any_arity
     diags = diagnostics_of(<<~RURI)
       function :bare do
