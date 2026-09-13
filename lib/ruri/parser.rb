@@ -11,6 +11,10 @@ module Ruri
   class Parser
     NAME_RE = /\A[a-z][a-z0-9_]*\z/.freeze
     ELISP_CALL_NAME_RE = /\A[a-z][a-z0-9_]*[!?]?\z/.freeze
+    # Binding names that mark a deliberately unused parameter or local. The
+    # generated Elisp name keeps the leading underscore, so the byte
+    # compiler suppresses its unused-argument warning for it.
+    DISCARD_NAME_RE = /\A_[a-z0-9_]*\z/.freeze
     BINARY_OPERATORS = {
       :+ => "+", :- => "-", :* => "*", :/ => "/", :% => "mod",
       :** => "expt", :< => "<", :<= => "<=", :> => ">", :>= => ">=",
@@ -817,7 +821,9 @@ module Ruri
     end
 
     def generated_local_name(source_name)
-      "ruri--local-#{source_name.tr("_", "-")}"
+      return "_#{source_name[1..].tr('_', '-')}" if source_name.start_with?('_')
+
+      "ruri--local-#{source_name.tr('_', '-')}"
     end
 
     def parse_command_body(block)
@@ -1817,7 +1823,7 @@ module Ruri
       parameter_nodes = parameters.requireds + optional_nodes + (rest_node ? [rest_node] : [])
       invalid = parameter_nodes.find do |parameter|
         name = parameter.name.to_s
-        !name.match?(NAME_RE) || name == "t"
+        (!name.match?(NAME_RE) && !name.match?(DISCARD_NAME_RE)) || name == "t"
       end
       if invalid
         error(invalid.location, "invalid #{construct} parameter name `#{invalid.name}`")

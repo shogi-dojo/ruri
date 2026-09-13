@@ -152,6 +152,27 @@ class ParserTest < Minitest::Test
                  parameters.names
   end
 
+  def test_parses_discard_parameters_with_underscore_names
+    # A leading underscore marks a deliberately unused binding; the
+    # generated name keeps the underscore so the byte compiler suppresses
+    # its unused-argument warning (this keeps the julia-mode port's
+    # callback lambdas warning-free).
+    function = parse(<<~RURI).first
+      function :probe do |x, _unused|
+        el.maphash(fn do |key, _value|
+          el.ignore(key, _value)
+        end, x)
+      end
+    RURI
+
+    assert_equal ["ruri--local-x", "_unused"], function.parameters.required
+    lambda_form = function.body.first.arguments[0]
+    assert_equal ["ruri--local-key", "_value"], lambda_form.parameters.required
+    # A discard name is still readable and resolves to its own symbol.
+    read = lambda_form.body.first.arguments[1]
+    assert_equal "_value", read.name
+  end
+
   def test_parses_optional_default_referencing_a_parameter
     function = parse(<<~RURI).first
       function :scale do |width, fallback = width|

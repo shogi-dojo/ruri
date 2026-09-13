@@ -262,6 +262,12 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 - Parameters and assigned locals use hygienic `ruri--local-` names. Assigning
   to a parameter mutates its argument binding; other assigned names are
   initialized in a lexical `let` around the body.
+- A parameter whose name begins with an underscore (`_unused`, or bare `_`)
+  marks a deliberately unused binding, in `function`, `command`, `fn`,
+  `let`, and the iteration forms. Its generated Elisp name keeps the
+  leading underscore instead of the hygienic prefix, so the byte compiler
+  suppresses its unused-argument warning; the name may still be read and
+  resolves to that same symbol.
 - The final supported expression supplies the return value. A final `if` or
   `unless` applies the same rule to every branch, so the selected branch value
   becomes the result. An omitted branch returns `nil` through normal Elisp

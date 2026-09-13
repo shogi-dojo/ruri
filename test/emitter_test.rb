@@ -35,6 +35,22 @@ class EmitterTest < Minitest::Test
     assert_includes output, "(defun first-cmd ()\n  (interactive)\n  (insert \"one\"))\n\n(defun second-cmd ()"
   end
 
+  def test_discard_parameters_keep_their_underscore_in_the_arglist
+    # The byte compiler suppresses unused-argument warnings for names
+    # starting with an underscore, so the discard name must survive
+    # generation verbatim instead of taking the hygienic prefix.
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :probe do |x, _unused|
+        el.maphash(fn do |key, _value|
+          el.ignore(key, _value)
+        end, x)
+      end
+    RURI
+
+    assert_includes output, "(defun probe (ruri--local-x _unused)"
+    assert_includes output, "(lambda (ruri--local-key _value)"
+  end
+
   def test_command_with_only_interactive_closes_on_same_line
     output = Ruri.compile(<<~RURI, path: "test.ruri")
       command :noop_cmd do
