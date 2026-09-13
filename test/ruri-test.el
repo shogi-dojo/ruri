@@ -882,7 +882,8 @@ while `variable_local' next to it was fenced, so check the whole set."
       (org-fragtog--disable-frag nil t)
       (org-fragtog--disable-frag nil)
       (should (null org-fragtog--timer))
-      (org-fragtog-mode)
+      ;; From Lisp a no-arg call enables; disable explicitly.
+      (org-fragtog-mode -1)
       (should (null org-fragtog-mode))
       (should (not (memq (quote org-fragtog--post-cmd) post-command-hook))))))
 
