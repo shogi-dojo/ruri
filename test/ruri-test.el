@@ -913,6 +913,68 @@ while `variable_local' next to it was fenced, so check the whole set."
     (should (commandp 'cmake-help-command))
     (should (commandp 'cmake-unscreamify-buffer))))
 
+(ert-deftest ruri-test/julia-mode-port-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri julia " t))
+         (original (expand-file-name "examples/julia-mode.ruri" ruri-test--root))
+         (source (expand-file-name "julia-mode.ruri" dir)))
+    (copy-file original source t)
+    (ruri-load-file source)
+    ;; The derived mode exists and is registered on prog-mode.
+    (should (fboundp 'julia-mode))
+    (with-temp-buffer
+      (insert "function f(x)\nx\nend\n")
+      (julia-mode)
+      (should (derived-mode-p 'prog-mode))
+      (should (equal "Julia" mode-name))
+      (should (equal "# " comment-start))
+      ;; The mode body installed the port's functions buffer-locally,
+      ;; including the hand-rolled syntax-propertize-function.
+      (should (eq indent-line-function 'julia-indent-line))
+      (should (eq beginning-of-defun-function 'julia-beginning-of-defun))
+      (should (eq end-of-defun-function 'julia-end-of-defun))
+      (should (eq fill-paragraph-function 'julia-fill-paragraph))
+      (should (eq syntax-propertize-function 'julia--syntax-propertize))
+      (should (equal '(julia-font-lock-keywords) font-lock-defaults))
+      ;; The faces were declared through custom-declare-face in the mode body.
+      (should (facep 'julia-macro-face))
+      (should (facep 'julia-quoted-symbol-face))
+      ;; The mode abbrev table inherits the LaTeX stub table.
+      (should (memq julia-latexsub-abbrev-table
+                    (abbrev-table-get local-abbrev-table :parents)))
+      ;; The ported indentation engine indents inside a function body and
+      ;; outdents on the closing line.
+      (goto-char (point-min))
+      (forward-line 1)
+      (julia-indent-line)
+      (should (= 4 (current-indentation)))
+      (forward-line 1)
+      (julia-indent-line)
+      (should (= 0 (current-indentation)))
+      ;; Defun navigation from inside the body returns to line 1.
+      (goto-char (point-min))
+      (forward-line 1)
+      (julia-beginning-of-defun)
+      (should (= 1 (line-number-at-pos)))
+      ;; The hand-rolled syntax propertizer recognizes triple-quoted strings.
+      (erase-buffer)
+      (insert "s = \"\"\"hello\"\"\"\n")
+      (syntax-propertize (point-max))
+      (goto-char 8)
+      (should (nth 3 (syntax-ppss))))
+    ;; The LaTeX substitution pipeline: the partials table resolves a
+    ;; prefix, and the command replaces it with the unicode character.
+    (with-temp-buffer
+      (julia-mode)
+      (insert "\\alp")
+      (goto-char (point-max))
+      (julia-latexsub-or-indent)
+      (should (equal "α" (buffer-string))))
+    ;; defcustoms keep their values.
+    (should (= 4 julia-indent-offset))
+    (should (= 20000 julia-max-block-lookback))
+    (should (commandp 'julia-fill-paragraph))
+    (should (commandp 'julia-end-of-defun))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))
