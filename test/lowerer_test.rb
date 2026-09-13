@@ -482,6 +482,20 @@ class LowererTest < Minitest::Test
     assert_equal "dotimes", break_catch.items[2].items.first.name
   end
 
+  def test_lowers_assign_local_to_setq_local
+    definitions = parse(<<~RURI)
+      command :local_write_cmd do
+        interactive
+        assign_local :hook_var, "set"
+      end
+    RURI
+
+    setq_local = Ruri::Lowerer.lower(definitions).first.items[4]
+    assert_equal "setq-local", setq_local.items[0].name
+    assert_equal "hook-var", setq_local.items[1].name
+    assert_equal "set", setq_local.items[2].value
+  end
+
   def test_lowers_place_operations_with_unevaluated_places
     function = parse(<<~RURI).first
       function :mutate do

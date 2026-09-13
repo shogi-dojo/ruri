@@ -860,6 +860,24 @@ while `variable_local' next to it was fenced, so check the whole set."
       (should (derived-mode-p 'text-mode))
       (should (equal "RuriT" mode-name)))))
 
+(ert-deftest ruri-test/assign-local-writes-buffer-locals ()
+  (let* ((dir (make-temp-file "ruri assign local " t))
+         (source (expand-file-name "assign-local.ruri" dir)))
+    (with-temp-file source
+      (insert "command :ruri_test_local_write_cmd do\n"
+              "  interactive\n"
+              "  assign_local :ruri_test_local_marker, \"set\"\n"
+              "end\n"))
+    (ruri-load-file source)
+    (with-temp-buffer
+      (call-interactively #'ruri-test-local-write-cmd)
+      (should (equal "set" ruri-test-local-marker))
+      (should (local-variable-p 'ruri-test-local-marker)))
+    ;; The variable was never defined globally, so the default binding
+    ;; is still void: the write only made a buffer-local.
+    (should-error (default-value 'ruri-test-local-marker)
+                  :type 'void-variable)))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

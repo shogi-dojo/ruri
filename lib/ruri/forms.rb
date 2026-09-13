@@ -58,6 +58,11 @@ module Ruri
     # [name, value_expression] in source order.
     Assign = Data.define(:pairs)
 
+    # Statement form assigning buffer-locally (setq-local). Same shape as
+    # Assign; the name is an unevaluated symbol position, so this is a
+    # typed form rather than an el.setq_local call.
+    AssignLocal = Data.define(:pairs)
+
     # Elisp keyword symbol (:begin, :end), self-quoting in Elisp.
     Keyword = Data.define(:source_name, :name)
 

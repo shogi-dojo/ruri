@@ -528,6 +528,17 @@ class EmitterTest < Minitest::Test
     ELISP
   end
 
+  def test_emits_assign_local_as_setq_local
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :local_write_cmd do
+        interactive
+        assign_local :hook_var, "set"
+      end
+    RURI
+
+    assert_includes output, "(setq-local hook-var \"set\")"
+  end
+
   def test_emits_mode_as_a_real_define_minor_mode_call
     output = Ruri.compile(<<~RURI, path: "test.ruri")
       variable :count, 0

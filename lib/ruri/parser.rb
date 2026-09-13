@@ -34,6 +34,7 @@ module Ruri
       "let" => "use the Ruri let form",
       "let-star" => "use the Ruri let form; it binds sequentially",
       "setq" => "use assign(:name, value)",
+      "setq-local" => "use assign_local(:name, value)",
       "dolist" => "use collection.each do |item| ... end",
       "cl-dolist" => "use collection.each do |item| ... end",
       "dotimes" => "use count.times do |i| ... end",
@@ -841,6 +842,10 @@ module Ruri
           end
         when :assign
           if (form = parse_assign_statement(stmt))
+            forms << form
+          end
+        when :assign_local
+          if (form = parse_assign_local_statement(stmt))
             forms << form
           end
         when :catch
@@ -1661,6 +1666,50 @@ module Ruri
       Forms::Assign.new(pairs: pairs)
     end
 
+    # `assign_local :name, value, ...` writes buffer-local Emacs Lisp
+    # variables with setq-local. Same shape and rules as assign.
+    def parse_assign_local_statement(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `assign_local` with explicit receiver")
+        return nil
+      end
+      if node.block
+        error(node.location, "assign_local does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "assign_local does not accept keyword arguments")
+        return nil
+      end
+      if positional.length < 2 || positional.length.odd?
+        error(node.location, "assign_local requires name/value pairs")
+        return nil
+      end
+
+      pairs = []
+      positional.each_slice(2) do |name_node, value_node|
+        unless literal_symbol_node?(name_node)
+          error(name_node.location,
+                "assign_local requires literal symbol variable names")
+          return nil
+        end
+        ok, source_name = extract_symbol(name_node)
+        return nil unless ok
+
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(name_node.location,
+                "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        value = parse_expression(value_node)
+        return nil unless value
+
+        pairs << [source_name.tr("_", "-"), value]
+      end
+      Forms::AssignLocal.new(pairs: pairs)
+    end
+
     def parse_lambda(node)
       if node.arguments
         error(node.location, "fn takes no arguments; use block parameters")
@@ -2075,7 +2124,7 @@ module Ruri
       return false if %i[each times].include?(node.name) && node.receiver
       return false if node.receiver.nil? &&
                       %i[interactive command with_current_buffer insert doc assign
-                         mode derived_mode].include?(node.name)
+                         assign_local mode derived_mode].include?(node.name)
       return false if node.receiver.nil? && node.name == :function && node.block
 
       true
@@ -2129,6 +2178,10 @@ module Ruri
           end
         when :assign
           if (form = parse_assign_statement(stmt))
+            forms << form
+          end
+        when :assign_local
+          if (form = parse_assign_local_statement(stmt))
             forms << form
           end
         when :catch

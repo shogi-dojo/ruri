@@ -496,6 +496,13 @@ module Ruri
           items << lower_expression(value)
         end
         Elisp.list(*items)
+      when Forms::AssignLocal
+        items = [Elisp.symbol("setq-local")]
+        statement.pairs.each do |name, value|
+          items << Elisp.symbol(name)
+          items << lower_expression(value)
+        end
+        Elisp.list(*items)
       else
         raise ArgumentError, "cannot lower Ruri form: #{statement.class}"
       end

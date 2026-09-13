@@ -1691,6 +1691,31 @@ end')
     end
   end
 
+  def test_parses_assign_local_pairs
+    definitions = parse(<<~RURI)
+      command :local_write_cmd do
+        interactive
+        assign_local :hook_var, "set", :other_var, 2
+      end
+    RURI
+
+    assign = definitions.first.body[1]
+    assert_instance_of Ruri::Forms::AssignLocal, assign
+    assert_equal([["hook-var", "set"], ["other-var", 2]],
+                 assign.pairs.map { |name, value| [name, value.value] })
+  end
+
+  def test_rejects_assign_local_bad_names
+    diag = single_diagnostic(<<~RURI)
+      command :bad_local_cmd do
+        interactive
+        assign_local "text", 1
+      end
+    RURI
+
+    assert_match(/assign_local requires literal symbol variable names/, diag.message)
+  end
+
   def test_el_defalias_still_compiles_its_evaluated_name
     # defalias takes its name as an evaluated argument, so the quote a
     # symbol literal gets is exactly right and must stay off the
