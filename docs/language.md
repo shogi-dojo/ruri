@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.12
+# Ruri language contract — version 0.15
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.12: every construct below is supported,
+is the exact scope of version 0.15: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -62,6 +62,8 @@ everything else is rejected with a source position.
 | `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`, `-a`, `+a` | Arithmetic lowered to `+`, `-`, `*`, `/`, `mod`, `expt`, unary `-`, and `identity`. Operand and division behavior follows Emacs Lisp. |
 | `while condition … end`, `until condition … end` | Repeatedly executes the body. `until` lowers to `while` with a negated condition. |
 | `items.each do \|item\| … end` | Iterates for side effects using `mapc` and a lexical lambda. Exactly one required block parameter is allowed. The collection may be any supported expression. |
+| `mode :name [, "docstring"] [, key: expression …] do … end` | Emits the real `(define-minor-mode name ["doc"] [:key expr …] body…)` macro call and lets Emacs expand it; Ruri never replicates the expansion. The name defines both a function and a state variable and is checked against both namespaces. Keyword pairs follow the `custom` rules (`lighter: " M"`, `init_value: nil`, `global: true`, `keymap: var(:map)`, `group:`, and so on, normalized to `:kebab-case`). The body holds ordinary statements, runs whenever the mode is enabled, and participates in normal local scoping. Top-level only. |
+| `derived_mode :child, :parent [, "mode line"] do … end` | Emits the real `(define-derived-mode child parent ["mode line"] ["doc"] body…)` macro call. The child and parent are literal symbols in unevaluated positions; the docstring is the established leading `doc` statement of the body. The body holds ordinary statements. Top-level only. |
 | `count.times do \|i\| … end` | Counting loop lowering to `dotimes` with a hygienic counter: `(dotimes (ruri--local-i count) …)`. Exactly one required block parameter, no call arguments; valid as a statement only, and its value is `nil` (matching `dotimes`, not Ruby's `Integer#times`). The counter starts at 0 and the body may use `break`/`next`. |
 | `items.map do \|item\| … end`, `items.select do \|item\| … end`, `items.find do \|item\| … end` | Value-producing iteration lowering to `mapcar`, `seq-filter`, and `seq-find`. The block's final expression maps, keeps, or tests each element. Exactly one required block parameter; `select` and `find` require `require :seq` in the source file. |
 | `break [value]`, `next [value]` | Exits the enclosing `while`, `until`, `.each`, `.map`, `.select`, or `.find` block through a compiler-generated catch tag: `next` ends one iteration (its value is that element's result in the iteration forms), `break` unwinds the whole loop with the value as its result. Must sit inside the loop, not across an `fn` boundary. Loops without exits emit no extra code. |
@@ -104,9 +106,9 @@ everything else is rejected with a source position.
   and `el.defmacro`; `el.defvar`, `el.defconst`, `el.defvar_local`, and
   `el.defcustom` (use `variable`, `constant`, `variable_local`, and
   `custom`); `el.cl_defstruct`; and the mode definitions `el.define_minor_mode`,
-  `el.define_globalized_minor_mode`, `el.define_derived_mode`, and
-  `el.define_generic_mode` (Ruri cannot yet define modes; write the mode
-  in Elisp and require it). Evaluated-name forms are deliberately not on
+  `el.define_globalized_minor_mode`, and `el.define_derived_mode`
+  (use the `mode` and `derived_mode` forms); `el.define_generic_mode`
+  remains rejected with no equivalent. Evaluated-name forms are deliberately not on
   this list: `el.defalias`'s first argument is evaluated, so the quote a
   symbol literal receives is exactly correct. The place-taking
   operators `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf`
@@ -386,6 +388,10 @@ structure safely:
    `el.setf`/`el.push`/`el.pop`/`el.cl_incf`/`el.cl_decf`, compile-time
    rejection of `el.*` calls with unevaluated binding positions, and
    nested quasiquotation with Common Lisp depth semantics.
+7. Mode definitions; v0.15 provides the `mode` and `derived_mode` forms
+   emitting real `define-minor-mode` and `define-derived-mode` macro
+   calls, and completes the rejection of definition macros with
+   unevaluated name positions (v0.14).
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still
