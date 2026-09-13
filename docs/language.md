@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.11
+# Ruri language contract — version 0.12
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.11: every construct below is supported,
+is the exact scope of version 0.12: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -39,9 +39,11 @@ everything else is rejected with a source position.
 | `begin … rescue [:cond, …] [=> var] … else … end` | Lowers to `condition-case`. Conditions are literal symbols normalized to Elisp condition names (`:arith_error` → `arith-error`); a bare `rescue` catches the `error` condition. Every clause may bind the same optional `=> var` — one binding, hygienic like other locals, readable in the handlers and (matching Ruby) after the block. `else` becomes a `(:success …)` handler whose value wins when nothing is raised. Valid as a statement or as the final value of a definition. |
 | `begin … [rescue …] ensure … end` | The `ensure` clause lowers to `unwind-protect`: cleanup always runs — including on the error path — and the result is the body's (or handler's) value, never the cleanup's. With both clauses the rescue form nests inside the ensure form. |
 | `catch(:tag) do … end`, `throw :tag, value` | Nonlocal exits with quoted symbol tags: `(catch 'tag …)` and `(throw 'tag value)`. The tag is an unevaluated literal symbol; the catch returns the thrown value, or its last body form's value when nothing is thrown. Throws may cross loops, `condition-case`, and cleanup forms. |
+| `let do \|a = 1, b = a + 1, c\| … end` | Scoped bindings lowering to `let*` with hygienic names. Initializers are evaluated left to right, so each may read the bindings to its left — exactly Ruby's own parameter-default semantics; a binding whose initializer reads its own name sees the outer binding, and a forward reference to a later binding is rejected as an undefined local. A parameter without a default (or with a literal `nil`/`false` one) binds `nil`. The bindings are visible only inside the block, shadow outer locals of the same name, and assignments to them mutate the binding; the block's final form supplies its value. `break` and `next` may not cross a `let` block; `return` passes through to the enclosing definition. No call arguments, no rest parameter. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
 | `el.message("value: %s", el.buffer_name)` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
+| `el.setf(place, value)`, `el.push(value, place)`, `el.pop(place)`, `el.cl_incf(place [, delta])`, `el.cl_decf(place [, delta])` | Generalized-place assignment as typed forms: the place sits in an unevaluated position, so a place is an Elisp variable symbol (`:name`), a Ruri local, `var(:name)`, or an `el.*` form such as `el.car(x)`. `push` keeps Elisp argument order — value first, place last. Anything else in the place position is rejected at compile time. `setf` takes exactly one place and one value (multiple pairs are not supported); `pop` exactly one place. |
 | `el.save_excursion do … end` | Emits an Elisp form with the Ruby block appended as body forms: `(save-excursion …)`. Positional arguments, nested statements, locals, and conditionals compose inside the body. Block parameters are rejected. |
 | `name = el.buffer_name` | Assigns a definition-local variable. The right-hand side may be any supported expression. A local is visible throughout its command or function, including before its first assignment (where its value is `nil`) and inside nested blocks. Compound assignments are rejected. |
 | `var(:fill_column)` | Reads an Emacs Lisp (dynamic, global, or buffer-local) variable, emitting the bare symbol `fill-column`. Definition-locals are referenced by their Ruby name instead. Exactly one literal symbol argument matching `[a-z][a-z0-9_]*`; `t` and `nil` are rejected. |
@@ -54,12 +56,13 @@ everything else is rejected with a source position.
 | `list(1, :two)` | Constructs an evaluated Lisp list: `(list 1 'two)`. Unlike Ruby array syntax, this produces a list rather than a vector. |
 | `cons(:key, value)` | Constructs one cons cell: `(cons 'key ruri--local-value)`. Exactly two evaluated arguments are required. |
 | `quote(list(:a, :b))` | Emits literal data using reader quote syntax: `'(a b)`. Quoted data accepts literals, arrays, `list`, and `cons`; runtime expressions are rejected. |
-| `quasiquote(list(:a, unquote(value), splice(items)))` | Emits a backquoted template: `` `(a ,value ,@items) ``. `splice` is valid only within a quasiquoted list or vector. |
+| `quasiquote(list(:a, unquote(value), splice(items)))` | Emits a backquoted template: `` `(a ,value ,@items) ``. `splice` is valid only within a quasiquoted list or vector. Templates nest; a deeper `unquote` escapes exactly one level (see Lisp data). |
 | `left && right`, `left \|\| right`, `!value` | Short-circuit boolean operations lowered to `and`, `or`, and `not`. Parentheses may group expressions. |
 | `a == b`, `a != b`, `a < b`, `a <= b`, `a > b`, `a >= b` | Equality uses Elisp `equal`; inequality wraps it in `not`. Ordered comparisons use their corresponding Elisp numeric forms. |
 | `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`, `-a`, `+a` | Arithmetic lowered to `+`, `-`, `*`, `/`, `mod`, `expt`, unary `-`, and `identity`. Operand and division behavior follows Emacs Lisp. |
 | `while condition … end`, `until condition … end` | Repeatedly executes the body. `until` lowers to `while` with a negated condition. |
 | `items.each do \|item\| … end` | Iterates for side effects using `mapc` and a lexical lambda. Exactly one required block parameter is allowed. The collection may be any supported expression. |
+| `count.times do \|i\| … end` | Counting loop lowering to `dotimes` with a hygienic counter: `(dotimes (ruri--local-i count) …)`. Exactly one required block parameter, no call arguments; valid as a statement only, and its value is `nil` (matching `dotimes`, not Ruby's `Integer#times`). The counter starts at 0 and the body may use `break`/`next`. |
 | `items.map do \|item\| … end`, `items.select do \|item\| … end`, `items.find do \|item\| … end` | Value-producing iteration lowering to `mapcar`, `seq-filter`, and `seq-find`. The block's final expression maps, keeps, or tests each element. Exactly one required block parameter; `select` and `find` require `require :seq` in the source file. |
 | `break [value]`, `next [value]` | Exits the enclosing `while`, `until`, `.each`, `.map`, `.select`, or `.find` block through a compiler-generated catch tag: `next` ends one iteration (its value is that element's result in the iteration forms), `break` unwinds the whole loop with the value as its result. Must sit inside the loop, not across an `fn` boundary. Loops without exits emit no extra code. |
 | `return [value]` | Returns from the innermost enclosing `command`, `function`, or `fn` body — a `fn` captures its own `return`, matching Ruby lambda semantics. Implemented with a catch tag wrapped around that body only when a `return` is present. |
@@ -87,6 +90,17 @@ everything else is rejected with a source position.
   assignment methods.
 - Ruri does not keep an Emacs function catalogue or enforce arity. The Emacs
   byte compiler and runtime report unknown functions and invalid arguments.
+- Calls whose arguments live in unevaluated positions — binding lists,
+  patterns, or variable names — cannot pass through the generic path (the
+  arguments would be emitted as evaluated calls and fail only at runtime),
+  so they are rejected at compile time with a pointer to the typed form
+  that covers them: `el.let`/`el.let_star` (use `let`), `el.setq`
+  (use `assign`), `el.dolist`/`el.cl_dolist` (use `.each`), `el.dotimes`
+  and `el.cl_dotimes` (use `.times`), `el.pcase`, `el.cl_loop`,
+  `el.cl_destructuring_bind`, `el.seq_let`, `el.when_let`, and
+  `el.if_let` (no Ruri equivalent; rejected outright). The place-taking
+  operators `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf`
+  are supported as typed forms (see the construct table).
 
 ## Expressions
 
@@ -131,8 +145,16 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 - Symbols inside `quote` and `quasiquote` become raw data symbols. Symbols in
   evaluated expressions retain the existing behavior and emit their own quote.
   This prevents nested data from being double quoted.
-- Nested `quote` or `quasiquote` forms are reserved for later work. Version 0.8
-  supports one template level with any number of unquoted or spliced values.
+- Nested quasiquotation is supported with Common Lisp depth semantics,
+  which Emacs follows: a `quasiquote` inside a template opens a template one
+  level deeper, and an `unquote` at template depth N escapes exactly one
+  level. At depth 1 the escape content is an ordinary runtime expression;
+  at deeper levels the content is still quoted data — `unquote(:name)`
+  keeps the symbol for the inner template's own evaluation, while
+  `unquote(unquote(expression))` (the double escape) evaluates the
+  expression at the outer level and keeps one comma for the inner
+  evaluation. Splices obey the same depth rules and must remain inside a
+  list or vector. `quote` inside a quasiquote stays rejected.
 
 ### Operators and loops
 
@@ -263,10 +285,12 @@ Everything outside the table above, including but not limited to:
   `fn`, `function`, `.each`, and `command` accept the block parameters
   described above; `with_current_buffer` and `el.*` accept only
   parameterless blocks; `insert` does not accept a block.
-- `redo` and `retry`; `break`/`next` placement crossing an `fn` boundary;
-  non-string `interactive` specifications; rescue conditions that are not
-  literal symbols; rescue clauses binding different variable names; a
-  `begin` block with neither a rescue nor an ensure clause.
+- `redo` and `retry`; `break`/`next` placement crossing an `fn` or `let`
+  block boundary; non-string `interactive` specifications; rescue conditions
+  that are not literal symbols; rescue clauses binding different variable
+  names; a `begin` block with neither a rescue nor an ensure clause;
+  `let` with call arguments, a rest parameter, or an initializer referencing
+  a later binding.
 - Executable top-level expressions: a `.ruri` file may contain only
   definitions and declarations — `command`, `function`, `variable`,
   `variable_local`, `constant`, `custom`, `require`, and `provide`
@@ -274,6 +298,16 @@ Everything outside the table above, including but not limited to:
 - Nested `command` or `function` definitions; `interactive` outside a command body,
   duplicated, or not first; empty `with_current_buffer` blocks;
   `insert` with a block.
+- Macro definitions (`macro :name do … end`). A Ruri macro body would run
+  at expansion time over unevaluated forms, which requires an interpreter
+  for the language itself; restricting bodies to single quasiquoted
+  templates was considered and rejected because the escape semantics
+  (argument binding, rest arguments, depth) would form a second language
+  to specify and trust. Write the generated Elisp directly or use `fn`
+  values instead.
+- Non-place arguments to the typed place operators (a place must be a
+  variable symbol, Ruri local, `var(:name)`, or `el.*` form); `setf` with
+  multiple place/value pairs; blocks on place operators.
 
 Each rejection is a compile error reported as `path:line:column: message`
 with 1-based positions pointing at the offending node.
@@ -303,8 +337,12 @@ Generated Lisp (`examples/hello.el`):
 
 ## Reserved for later versions
 
-Nested quasiquotation, a raw Lisp escape hatch, and loop escapes beyond
-`break` and `next` remain out of scope.
+Loop escapes beyond `break` and `next` remain out of scope. A raw Lisp
+escape hatch stays out of scope until its trust boundary and serialization
+rules are specified in this contract first: whatever surface it gets, it
+must never interpolate raw source text into emitted Lisp — every emitted
+byte must still pass through the validating `Elisp` constructors and the
+deterministic printer.
 
 ## Path toward broad Elisp coverage
 
@@ -332,6 +370,12 @@ structure safely:
    (unwind-protect), `catch`/`throw` with symbol tags, `break`, `next`,
    `return`, and `.map`/`.select`/`.find` lowering to mapcar and the seq
    functions.
+6. Binding structure and safe Elisp surface; v0.12 provides scoped `let`
+   bindings lowering to `let*` with Ruby-default initializer semantics,
+   `.times` counting loops (dotimes), typed generalized places for
+   `el.setf`/`el.push`/`el.pop`/`el.cl_incf`/`el.cl_decf`, compile-time
+   rejection of `el.*` calls with unevaluated binding positions, and
+   nested quasiquotation with Common Lisp depth semantics.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still

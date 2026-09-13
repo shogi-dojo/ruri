@@ -453,6 +453,86 @@ class LowererTest < Minitest::Test
     assert_equal "ruri--next-2", next_catch.items[1].value.name
   end
 
+  def test_lowers_times_to_dotimes_with_loop_tags
+    function = parse(<<~RURI).first
+      function :repeat do
+        total = 0
+        5.times do |i|
+          next if i == 1
+        end
+        9.times do |i|
+          break if i == 3
+        end
+        total
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first.items[3]
+    dotimes_form = lowered.items[3]
+    assert_equal "dotimes", dotimes_form.items.first.name
+    binding = dotimes_form.items[1]
+    assert_equal "ruri--local-i", binding.items[0].name
+    assert_equal 5, binding.items[1].value
+    next_catch = dotimes_form.items[2]
+    assert_equal "catch", next_catch.items.first.name
+    assert_equal "ruri--next-1", next_catch.items[1].value.name
+    break_catch = lowered.items[4]
+    assert_equal "catch", break_catch.items.first.name
+    assert_equal "ruri--break-2", break_catch.items[1].value.name
+    assert_equal "dotimes", break_catch.items[2].items.first.name
+  end
+
+  def test_lowers_place_operations_with_unevaluated_places
+    function = parse(<<~RURI).first
+      function :mutate do
+        cell = list(:a)
+        el.setf(el.car(cell), 1)
+        el.setf(:hook_var, 2)
+        el.push(3, :hook_var)
+        el.cl_incf(cell, 4)
+        el.pop(:hook_var)
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first.items[3]
+    setf_form = lowered.items[3]
+    assert_equal "setf", setf_form.items.first.name
+    assert_equal "car", setf_form.items[1].items.first.name
+    assert_equal "ruri--local-cell", setf_form.items[1].items[1].name
+    assert_equal 1, setf_form.items[2].value
+    symbol_setf = lowered.items[4]
+    assert_equal "hook-var", symbol_setf.items[1].name
+    push_form = lowered.items[5]
+    assert_equal "push", push_form.items.first.name
+    assert_equal 3, push_form.items[1].value
+    assert_equal "hook-var", push_form.items[2].name
+    incf_form = lowered.items[6]
+    assert_equal "cl-incf", incf_form.items.first.name
+    assert_equal "ruri--local-cell", incf_form.items[1].name
+    assert_equal 4, incf_form.items[2].value
+    pop_form = lowered.items[7]
+    assert_equal "pop", pop_form.items.first.name
+    assert_equal "hook-var", pop_form.items[1].name
+  end
+
+  def test_lowers_nested_quasiquotation_with_depth_escapes
+    command = parse(<<~RURI).first
+      command :nested_cmd do
+        interactive
+        template = quasiquote(list(:a, quasiquote(list(:b, unquote(:flag)))))
+      end
+    RURI
+
+    quasi = Ruri::Lowerer.lower([command]).first.items[4].items[2].items[2]
+    assert_instance_of Ruri::Elisp::QuasiQuote, quasi
+    inner_quasi = quasi.value.items[1]
+    assert_instance_of Ruri::Elisp::QuasiQuote, inner_quasi
+    deep_unquote = inner_quasi.value.items[1]
+    assert_instance_of Ruri::Elisp::Unquote, deep_unquote
+    # The escaped content is the raw data symbol, not a quoted literal.
+    assert_equal "flag", deep_unquote.value.name
+  end
+
   def test_return_wraps_the_defun_body_in_a_catch
     function = parse(<<~RURI).first
       function :early do
@@ -508,5 +588,79 @@ class LowererTest < Minitest::Test
     assert_equal "mapcar", lowered[0].items[3].items.first.name
     assert_equal "seq-filter", lowered[1].items[3].items.first.name
     assert_equal "seq-find", lowered[2].items[3].items.first.name
+  end
+
+  def test_lowers_let_to_let_star_with_sequential_bindings
+    function = parse(<<~RURI).first
+      function :scoped do
+        base = 2
+        let do |c, a = base, b = a|
+          list(a, b, c)
+        end
+      end
+    RURI
+
+    let_form = Ruri::Lowerer.lower([function]).first.items[3].items[3]
+    assert_equal "let*", let_form.items[0].name
+    bindings = let_form.items[1].items
+    # The bare required parameter binds nil explicitly; the bare-symbol
+    # shape would draw a byte-compiler "left uninitialized" warning.
+    assert_equal ["ruri--local-c", "nil"], bindings[0].items.map(&:name)
+    assert_equal ["ruri--local-a", "ruri--local-base"], bindings[1].items.map(&:name)
+    assert_equal ["ruri--local-b", "ruri--local-a"], bindings[2].items.map(&:name)
+  end
+
+  def test_let_nil_and_false_defaults_bind_explicit_nil
+    function = parse(<<~RURI).first
+      function :blank do
+        let do |x = nil, y = false|
+          x
+        end
+      end
+    RURI
+
+    let_form = Ruri::Lowerer.lower([function]).first.items[3]
+    assert_equal "let*", let_form.items[0].name
+    assert_equal [%w[ruri--local-x nil], %w[ruri--local-y nil]],
+                 (let_form.items[1].items.map { |binding| binding.items.map(&:name) })
+  end
+
+  def test_let_bindings_stay_out_of_the_definition_let
+    function = parse(<<~RURI).first
+      function :scoped do
+        let do |x = 1|
+          y = x
+          x = y
+        end
+        y
+      end
+    RURI
+
+    defun = Ruri::Lowerer.lower([function]).first
+    outer_let = defun.items[3]
+    # y is a leaky body local declared in the definition let; the let
+    # binding x is not, and writing to x inside the block mutates the
+    # let* binding with a plain setq.
+    assert_equal ["ruri--local-y"], outer_let.items[1].items.map(&:name)
+    inner = outer_let.items[2]
+    assert_equal "let*", inner.items[0].name
+    x_write = inner.items[3]
+    assert_equal "setq", x_write.items[0].name
+    assert_equal "ruri--local-x", x_write.items[1].name
+  end
+
+  def test_return_inside_let_wraps_the_definition_in_a_catch
+    function = parse(<<~RURI).first
+      function :escape do
+        let do |x = 1|
+          return x
+        end
+        :after
+      end
+    RURI
+
+    catch_form = Ruri::Lowerer.lower([function]).first.items[3]
+    assert_equal "catch", catch_form.items[0].name
+    assert_equal "ruri--return-1", catch_form.items[1].value.name
   end
 end

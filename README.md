@@ -238,7 +238,7 @@ batch Emacs.
 
 ## Language
 
-The exact v0.11 contract — supported constructs, name rules, expression
+The exact v0.12 contract — supported constructs, name rules, expression
 semantics, and everything explicitly rejected — is
 [`docs/language.md`](docs/language.md). Top-level definitions include commands,
 noninteractive functions with required, optional, and rest parameters and
@@ -253,7 +253,13 @@ and named `function(:name)` references. `begin`/`rescue`/`else` lower to
 `condition-case`, `ensure` to `unwind-protect`, `catch`/`throw` carry quoted
 symbol tags, `break`/`next`/`return` compile to catch tags only where they
 are used, and `.map`/`.select`/`.find` provide value-producing iteration
-(the `seq`-based forms ask for an explicit `require :seq`). Expressions
+(the `seq`-based forms ask for an explicit `require :seq`). Scoped `let`
+bindings lower to `let*` with Ruby-default initializer semantics,
+`count.times` lowers to `dotimes`, `el.setf`/`el.push`/`el.pop`/
+`el.cl_incf`/`el.cl_decf` are typed place assignments, calls with
+unevaluated binding positions (such as `el.let` and `el.setq`) are rejected
+at compile time, and quasiquote templates nest with Common Lisp depth
+semantics. Expressions
 include lists, cons cells,
 literal quote, quasiquote with unquote and splicing, Ruby operators, loops,
 and `var :name` reads of dynamic Emacs Lisp variables. Every rejection names
