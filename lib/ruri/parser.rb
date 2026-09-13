@@ -99,6 +99,7 @@ module Ruri
       "define-globalized-minor-mode" => "Ruri cannot express globalized modes; write the mode in Elisp and require it",
       "define-derived-mode" => "use the derived_mode form",
       "define-generic-mode" => "Ruri cannot express generic modes; write the mode in Elisp and require it",
+      "define-abbrev-table" => "use el.make_abbrev_table with el.define_abbrev, and el.abbrev_table_put for properties",
       "rx" => "Ruri cannot express rx forms; pass a regexp string, or use el.rx_to_string over quoted data",
       "syntax-propertize-rules" => "Ruri cannot express syntax-propertize rules; write them in Elisp and require them"
     }.freeze

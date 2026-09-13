@@ -124,7 +124,11 @@ everything else is rejected with a source position.
   mode definitions `el.define_minor_mode` — use `mode` — and
   `el.define_derived_mode` — use `derived_mode`, with
   `el.define_globalized_minor_mode` and `el.define_generic_mode` having
-  no Ruri equivalent), error handling (`el.condition_case` — use
+  no Ruri equivalent), abbrev tables (`el.define_abbrev_table` — its
+  `:parents` and other keyword properties arrive as quoted symbols and
+  are silently dropped; use `el.make_abbrev_table` with
+  `el.define_abbrev`, and `el.abbrev_table_put` for properties), error
+  handling (`el.condition_case` — use
   `begin`/`rescue`), and macros whose whole body is unevaluated (`el.rx`
   — pass a regexp string, or build one at runtime with `el.rx_to_string`
   over quoted data; and `el.syntax_propertize_rules` — no Ruri
@@ -424,7 +428,9 @@ structure safely:
    `el.cl_defmethod`, `el.cl_defgeneric`), `el.lambda` (arglist), and
    `el.condition_case` — each verified to break or silently miscompile
    in batch Emacs before admission, with `begin`/`rescue`, `if`/`elsif`,
-   `let`, `fn`, `.each`, and `.times` as the stated coverage.
+   `let`, `fn`, `.each`, and `.times` as the stated coverage. `el.define_abbrev_table`
+   joined during review of the julia-mode port: its `:parents` keyword
+   arrives as a quoted symbol and the property is silently dropped.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still

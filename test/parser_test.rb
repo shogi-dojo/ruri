@@ -1703,6 +1703,7 @@ end')
       "define_globalized_minor_mode" => "globalized modes",
       "define_derived_mode" => "use the derived_mode form",
       "define_generic_mode" => "generic modes",
+      "define_abbrev_table" => "el.make_abbrev_table",
       "rx" => "rx forms",
       "syntax_propertize_rules" => "syntax-propertize rules"
     }
