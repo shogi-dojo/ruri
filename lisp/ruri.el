@@ -108,6 +108,30 @@ never a stale `.elc'."
   (interactive (list (ruri--read-source-file "Ruri source to load: ")))
   (load (ruri--compile source) nil t t))
 
+(defvar ruri-font-lock-keywords
+  (list
+   (cons
+    "\\<\\(assign\\|catch\\|command\\|constant\\|custom\\|doc\\|fn\\|function\\|interactive\\|let\\|provide\\|quasiquote\\|quote\\|require\\|splice\\|throw\\|unquote\\|variable_local\\|var\\)\\>"
+    'font-lock-keyword-face)
+   (cons "\\<el\\>" 'font-lock-builtin-face))
+  "Ruri vocabulary highlighted by `ruri-mode' in addition to Ruby's.
+The first entry matches the Ruri definition and template forms; the
+second matches the `el' namespace used for explicit Emacs Lisp calls.")
+
+;;;###autoload
+(define-derived-mode ruri-mode ruby-mode "Ruri"
+  "Major mode for editing Ruri (Ruby-shaped Emacs Lisp) source files.
+Ruri source is valid Ruby syntax, so inheritance from `ruby-mode'
+provides indentation, comment syntax, and symbol handling; the Ruri
+vocabulary (command, function, let, assign, and friends) is
+highlighted on top through `ruri-font-lock-keywords'.  Compile the
+buffer's file with \\[ruri-compile-file], or enable
+`ruri-compile-on-save-mode' to compile after every save."
+  (font-lock-add-keywords nil ruri-font-lock-keywords 'append))
+
+;;;###autoload
+(add-to-list 'auto-mode-alist '("\\.ruri\\'" . ruri-mode))
+
 (provide 'ruri)
 
 ;;; ruri.el ends here

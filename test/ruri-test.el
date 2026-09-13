@@ -659,6 +659,30 @@
       (should (equal "(c `(d ,\"xy\"))" (format "%S" two)))
       (should (equal '(d "xy") (eval (cadr two) t))))))
 
+(ert-deftest ruri-test/major-mode-activates-for-dot-ruri-files ()
+  (let* ((dir (make-temp-file "ruri mode " t))
+         (source (expand-file-name "sample.ruri" dir)))
+    (with-temp-file source
+      (insert "command :mode_cmd do\n"
+              "  interactive\n"
+              "  el.insert(\"hi\")\n"
+              "end\n"))
+    (with-current-buffer (find-file-noselect source)
+      (unwind-protect
+          (progn
+            ;; auto-mode-alist dispatches .ruri files to ruri-mode.
+            (should (eq major-mode 'ruri-mode))
+            ;; The Ruri vocabulary highlights on top of Ruby's syntax.
+            (font-lock-ensure)
+            (goto-char (point-min))
+            (re-search-forward "\\_<command\\_>")
+            (should (eq (get-text-property (match-beginning 0) 'face)
+                        'font-lock-keyword-face))
+            (re-search-forward "\\_<el\\_>")
+            (should (eq (get-text-property (match-beginning 0) 'face)
+                        'font-lock-builtin-face)))
+        (kill-buffer)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))
