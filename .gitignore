@@ -2,3 +2,4 @@
 vendor/
 *.elc
 notes/
+*.gem
