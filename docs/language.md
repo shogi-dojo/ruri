@@ -436,7 +436,11 @@ structure safely:
    in batch Emacs before admission, with `begin`/`rescue`, `if`/`elsif`,
    `let`, `fn`, `.each`, and `.times` as the stated coverage. `el.define_abbrev_table`
    joined during review of the julia-mode port: its `:parents` keyword
-   arrives as a quoted symbol and the property is silently dropped.
+   arrives as a quoted symbol and the property is silently dropped. The
+   same port drove the underscore-prefixed discard-parameter form: a
+   binding named `_unused` (or bare `_`) emits its Elisp name with the
+   leading underscore kept, so the byte compiler suppresses its
+   unused-argument warning for callback lambdas.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still
