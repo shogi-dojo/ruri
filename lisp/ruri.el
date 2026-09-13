@@ -58,6 +58,13 @@ configuration uses this to point BUNDLE_GEMFILE at the compiler
 checkout's Gemfile."
   :type '(repeat string))
 
+(defcustom ruri-byte-compile-after-compile nil
+  "When non-nil, byte-compile the generated `.el' after compiling.
+`ruri-compile-file' then also produces a `.elc' beside it.  A
+byte-compile failure reports the diagnostics but never destroys the
+generated `.el'."
+  :type 'boolean)
+
 (defun ruri--read-source-file (prompt)
   "Prompt with PROMPT for a `.ruri' source file, defaulting to the buffer file."
   (let ((default (and buffer-file-name
@@ -120,9 +127,23 @@ an error; the previous output file is left untouched."
 ;;;###autoload
 (defun ruri-compile-file (source)
   "Compile the Ruri source file SOURCE to `NAME.el' beside it.
-Return the output path.  Interactively, prompt for a `.ruri' file."
+Return the output path.  Interactively, prompt for a `.ruri' file.
+With `ruri-byte-compile-after-compile' non-nil, the generated file is
+byte-compiled as well."
   (interactive (list (ruri--read-source-file "Ruri source to compile: ")))
-  (ruri--compile source))
+  (let ((output (ruri--compile source)))
+    (when ruri-byte-compile-after-compile
+      (ruri--byte-compile output))
+    output))
+
+(defun ruri--byte-compile (output)
+  "Byte-compile the generated OUTPUT file.
+Errors are reported as a user error naming the file; the `.el' itself
+is always left intact."
+  (let ((result (byte-compile-file output)))
+    (unless (eq result t)
+      (user-error "Ruri: byte-compiling %S failed; the generated file was kept"
+                  output))))
 
 ;;;###autoload
 (defun ruri-load-file (source)

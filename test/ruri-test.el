@@ -747,6 +747,33 @@
         (set-buffer-modified-p nil)
         (kill-buffer)))))
 
+(ert-deftest ruri-test/byte-compile-after-compile-is-optional-and-safe ()
+  (let* ((dir (make-temp-file "ruri elc " t))
+         (source (expand-file-name "elced.ruri" dir))
+         (output (expand-file-name "elced.el" dir))
+         (elc (concat output "c"))
+         ruri-byte-compile-after-compile)
+    (with-temp-file source
+      (insert "command :elced_cmd do\n"
+              "  interactive\n"
+              "  el.insert(\"ok\")\n"
+              "end\n"))
+    ;; Default off: no .elc appears.
+    (should-not ruri-byte-compile-after-compile)
+    (ruri-compile-file source)
+    (should (file-exists-p output))
+    (should-not (file-exists-p elc))
+    ;; Opting in produces a .elc and keeps the .el.
+    (let ((ruri-byte-compile-after-compile t))
+      (ruri-compile-file source))
+    (should (file-exists-p elc))
+    (should (file-exists-p output))
+    ;; A byte-compile failure reports an error but keeps the `.el'.
+    (with-temp-file output
+      (insert "(defun (broken\n"))
+    (should-error (ruri--byte-compile output))
+    (should (file-exists-p output))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))
