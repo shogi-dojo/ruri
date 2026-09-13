@@ -878,6 +878,41 @@ while `variable_local' next to it was fenced, so check the whole set."
     (should-error (default-value 'ruri-test-local-marker)
                   :type 'void-variable)))
 
+(ert-deftest ruri-test/cmake-mode-port-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri cmake " t))
+         (original (expand-file-name "examples/cmake-mode.ruri" ruri-test--root))
+         (source (expand-file-name "cmake-mode.ruri" dir)))
+    (copy-file original source t)
+    (ruri-load-file source)
+    ;; The derived mode exists and is registered on prog-mode.
+    (should (fboundp 'cmake-mode))
+    (with-temp-buffer
+      (insert "if(FOO)\nset(BAR 1)\nendif()\n")
+      (cmake-mode)
+      (should (derived-mode-p 'prog-mode))
+      (should (equal "CMake" mode-name))
+      (should (equal "#" comment-start))
+      ;; indent-line-function and the defun navigation hooks were
+      ;; installed buffer-locally by the mode body.
+      (should (eq indent-line-function 'cmake-indent))
+      (should (eq beginning-of-defun-function 'cmake-beginning-of-defun))
+      (should (eq end-of-defun-function 'cmake-end-of-defun))
+      (should (equal '(cmake-font-lock-keywords) font-lock-defaults))
+      ;; The ported indentation engine indents inside a block and
+      ;; outdents on the closing line.
+      (goto-char (point-min))
+      (forward-line 1)
+      (cmake-indent)
+      (should (= 2 (current-indentation)))
+      (forward-line 1)
+      (cmake-indent)
+      (should (= 0 (current-indentation))))
+    ;; defcustoms and constants from the port keep their values.
+    (should (equal "cmake" cmake-mode-cmake-executable))
+    (should (= 2 cmake-tab-width))
+    (should (commandp 'cmake-help-command))
+    (should (commandp 'cmake-unscreamify-buffer))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))
