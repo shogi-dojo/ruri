@@ -317,7 +317,9 @@ class PackageFormsTest < Minitest::Test
     assert_includes output, "(defvar-local org-fragtog--timer nil"
     assert_includes output, "(org-element-property :begin ruri--local-frag)"
     assert_includes output, ":options '(org-at-table-p org-at-table-el-p org-at-block-p org-at-heading-p)"
-    assert_includes output, "(setq org-fragtog-mode\n    (not org-fragtog-mode))"
+    # The real define-minor-mode macro call, not the old emulation.
+    assert_includes output, "(define-minor-mode org-fragtog-mode"
+    assert_includes output, ":init-value nil\n  (setq org-complex-heading-regexp"
   end
 
   def test_var_read_emits_bare_symbol

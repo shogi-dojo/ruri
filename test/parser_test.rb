@@ -1653,6 +1653,7 @@ end')
       "let" => "the Ruri let form",
       "let_star" => "the Ruri let form",
       "setq" => "assign",
+      "setq_local" => "assign_local",
       "dolist" => "each",
       "cl_dolist" => "each",
       "dotimes" => "times",
@@ -1662,7 +1663,22 @@ end')
       "cl_destructuring_bind" => "destructuring",
       "seq_let" => "destructuring",
       "when_let" => "if",
-      "if_let" => "if"
+      "if_let" => "if",
+      "defun" => "function or command",
+      "defconst" => "constant",
+      "defvar" => "variable or variable_local",
+      "defvar_local" => "variable_local",
+      "defcustom" => "custom",
+      "defmacro" => "Ruri cannot define macros",
+      "defsubst" => "defsubst inlining",
+      "cl_defun" => "function or command",
+      "cl_defstruct" => "cl-defstruct records",
+      "define_minor_mode" => "use the mode form",
+      "define_globalized_minor_mode" => "globalized modes",
+      "define_derived_mode" => "use the derived_mode form",
+      "define_generic_mode" => "generic modes",
+      "rx" => "rx forms",
+      "syntax_propertize_rules" => "syntax-propertize rules"
     }
 
     names.each do |name, hint|
@@ -1676,6 +1692,46 @@ end')
       assert_match(/takes bindings or names in unevaluated positions/, diags.first.message)
       assert_includes diags.first.message, hint
     end
+  end
+
+  def test_parses_assign_local_pairs
+    definitions = parse(<<~RURI)
+      command :local_write_cmd do
+        interactive
+        assign_local :hook_var, "set", :other_var, 2
+      end
+    RURI
+
+    assign = definitions.first.body[1]
+    assert_instance_of Ruri::Forms::AssignLocal, assign
+    assert_equal([["hook-var", "set"], ["other-var", 2]],
+                 assign.pairs.map { |name, value| [name, value.value] })
+  end
+
+  def test_rejects_assign_local_bad_names
+    diag = single_diagnostic(<<~RURI)
+      command :bad_local_cmd do
+        interactive
+        assign_local "text", 1
+      end
+    RURI
+
+    assert_match(/assign_local requires literal symbol variable names/, diag.message)
+  end
+
+  def test_el_defalias_still_compiles_its_evaluated_name
+    # defalias takes its name as an evaluated argument, so the quote a
+    # symbol literal gets is exactly right and must stay off the
+    # unevaluated-position rejection table.
+    definitions = parse(<<~RURI)
+      function :aliasing do
+        el.defalias(:my_alias, function(:identity))
+      end
+    RURI
+
+    call = definitions.first.body.first
+    assert_instance_of Ruri::Forms::Call, call
+    assert_equal "defalias", call.name
   end
 
   def test_rejects_unevaluated_position_calls_at_any_arity
@@ -1789,5 +1845,73 @@ end')
     assert_match(/invalid setf place `t`/, diags[1].message)
     assert_match(/el\.pop takes one place/, diags[2].message)
     assert_match(/el\.cl-incf does not take a block/, diags[3].message)
+  end
+
+  def test_parses_mode_definition_with_keywords_and_body
+    definitions = parse(<<~RURI)
+      variable :counter, 0
+
+      mode :fancy_mode,
+           "A fancy minor mode.",
+           init_value: nil,
+           lighter: " Fcy" do
+        assign :counter, var(:counter) + 1
+        if var(:fancy_mode)
+          el.message("on")
+        else
+          el.message("off")
+        end
+      end
+    RURI
+
+    assert_equal 2, definitions.length
+    mode = definitions[1]
+    assert_instance_of Ruri::Forms::Mode, mode
+    assert_equal "fancy_mode", mode.source_name
+    assert_equal "fancy-mode", mode.name
+    assert_equal "A fancy minor mode.", mode.docstring
+    first, second = mode.keywords
+    assert_equal "init-value", first[0]
+    assert_instance_of Ruri::Forms::Literal, first[1]
+    assert_equal "lighter", second[0]
+    assert_equal 2, mode.body.length
+  end
+
+  def test_rejects_mode_definitions_with_bad_names_and_shapes
+    diags = diagnostics_of(<<~RURI)
+      mode "not_a_symbol", "Doc." do
+      end
+
+      function :existing do
+      end
+
+      mode :existing, "Doc." do
+      end
+
+      mode :variable_clash, "Doc." do
+      end
+    RURI
+
+    assert_match(/literal symbol argument required/, diags[0].message)
+    assert_match(/duplicate mode definition `existing`; already defined as function/, diags[1].message)
+  end
+
+  def test_rejects_mode_without_block
+    diag = single_diagnostic(<<~RURI)
+      mode :noblock, "Doc."
+    RURI
+
+    assert_match(/mode requires a do\.\.\.end block/, diag.message)
+  end
+
+  def test_rejects_mode_nested_in_a_function_body
+    diag = single_diagnostic(<<~RURI)
+      function :nested do
+        mode :inner, "Doc." do
+        end
+      end
+    RURI
+
+    assert_match(/mode is only allowed at the top level of a \.ruri file/, diag.message)
   end
 end

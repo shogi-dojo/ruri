@@ -659,6 +659,260 @@
       (should (equal "(c `(d ,\"xy\"))" (format "%S" two)))
       (should (equal '(d "xy") (eval (cadr two) t))))))
 
+(ert-deftest ruri-test/major-mode-activates-for-dot-ruri-files ()
+  (let* ((dir (make-temp-file "ruri mode " t))
+         (source (expand-file-name "sample.ruri" dir)))
+    (with-temp-file source
+      (insert "command :mode_cmd do\n"
+              "  interactive\n"
+              "  el.insert(\"hi\")\n"
+              "end\n"))
+    (with-current-buffer (find-file-noselect source)
+      (unwind-protect
+          (progn
+            ;; auto-mode-alist dispatches .ruri files to ruri-mode.
+            (should (eq major-mode 'ruri-mode))
+            ;; The Ruri vocabulary highlights on top of Ruby's syntax.
+            (font-lock-ensure)
+            (goto-char (point-min))
+            (re-search-forward "\\_<command\\_>")
+            (should (eq (get-text-property (match-beginning 0) 'face)
+                        'font-lock-keyword-face))
+            (re-search-forward "\\_<el\\_>")
+            (should (eq (get-text-property (match-beginning 0) 'face)
+                        'font-lock-builtin-face)))
+        (kill-buffer)))))
+
+(ert-deftest ruri-test/font-lock-covers-the-documented-vocabulary ()
+  "Every top-level Ruri construct highlights as a keyword.
+Sampling a couple of names previously let `variable' ship unhighlighted
+while `variable_local' next to it was fenced, so check the whole set."
+  (let* ((dir (make-temp-file "ruri vocabulary " t))
+         (source (expand-file-name "vocabulary.ruri" dir)))
+    (with-temp-file source
+      (insert "require :seq\n"
+              "provide :vocabulary\n"
+              "variable :a, 1, \"D.\"\n"
+              "variable_local :b, 2, \"D.\"\n"
+              "constant :c, 3, \"D.\"\n"
+              "custom :d, 4, \"D.\", group: :tools\n"
+              "command :e do\n"
+              "  interactive\n"
+              "  with_current_buffer(\"*x*\") do\n"
+              "    insert(\"hi\")\n"
+              "  end\n"
+              "  assign :a, list(cons(1, 2), keyword(:begin), quote(list(:q)))\n"
+              "end\n"))
+    (with-current-buffer (find-file-noselect source)
+      (unwind-protect
+          (progn
+            (font-lock-ensure)
+            ;; `require' and `quote' are Ruby's own keywords, so ruby-mode
+            ;; fontifies them first; any highlighting face is fine there.
+            (dolist (name '("provide" "variable" "variable_local"
+                            "constant" "custom" "command" "interactive"
+                            "with_current_buffer" "insert" "assign" "list"
+                            "cons" "keyword"))
+              (goto-char (point-min))
+              (should (re-search-forward (concat "\\_<" (regexp-quote name) "\\_>") nil t))
+              (should (eq (get-text-property (match-beginning 0) 'face)
+                          'font-lock-keyword-face)))
+            (goto-char (point-min))
+            (should (re-search-forward "\\_<require\\_>" nil t))
+            (should (memq (get-text-property (match-beginning 0) 'face)
+                          '(font-lock-keyword-face font-lock-builtin-face))))
+        (kill-buffer)))))
+
+(ert-deftest ruri-test/failed-compilation-navigates-via-next-error ()
+  (let* ((dir (make-temp-file "ruri navigation " t))
+         (source (expand-file-name "broken.ruri" dir)))
+    (with-temp-file source
+      (insert "command :broken_cmd do\n"
+              "  interactive\n"
+              "  el.foo(\n"
+              "end\n"))
+    (should-error (ruri-compile-file source))
+    (let ((buffer (seq-find (lambda (buffer)
+                              (string-prefix-p "*Ruri compilation:"
+                                               (buffer-name buffer)))
+                            (buffer-list))))
+      (unwind-protect
+          (progn
+            (should buffer)
+            (with-current-buffer buffer
+              (should (eq major-mode 'compilation-mode))
+              (should (string-match-p
+                       (concat (regexp-quote (file-name-nondirectory source))
+                               ":[0-9]+:[0-9]+: syntax error")
+                       (buffer-string)))
+              ;; The built-in gnu rule parsed the diagnostics as errors
+              ;; and next-error visits the failing source line.
+              (goto-char (point-min))
+              (next-error 1)
+              (set-buffer (window-buffer (selected-window)))
+              (should (equal source (buffer-file-name)))
+              (should (= 4 (line-number-at-pos)))))
+        (when buffer (kill-buffer buffer))))))
+
+(ert-deftest ruri-test/compile-on-save-is-opt-in-and-works-when-enabled ()
+  (let* ((dir (make-temp-file "ruri on save " t))
+         (source (expand-file-name "autosave.ruri" dir))
+         (output (expand-file-name "autosave.el" dir)))
+    (with-temp-file source
+      (insert "command :autosave_cmd do\n"
+              "  interactive\n"
+              "  el.insert(\"v1\")\n"
+              "end\n"))
+    (with-current-buffer (find-file-noselect source)
+      (unwind-protect
+          (progn
+            ;; Off by default: saving must not compile.
+            (should-not ruri-compile-on-save-mode)
+            (should-not (memq #'ruri--compile-on-save after-save-hook))
+            (save-buffer)
+            (should-not (file-exists-p output))
+            ;; Enabling the mode compiles after each save.
+            (ruri-compile-on-save-mode)
+            (should (memq #'ruri--compile-on-save after-save-hook))
+            (goto-char (point-min))
+            (search-forward "v1")
+            (replace-match "v2")
+            (save-buffer)
+            (should (file-exists-p output))
+            (with-temp-buffer
+              (insert-file-contents output)
+              (should (string-match-p "autosave-cmd" (buffer-string)))
+              (should (string-match-p "v2" (buffer-string)))))
+        (ruri-compile-on-save-mode -1)
+        (set-buffer-modified-p nil)
+        (kill-buffer)))))
+
+(ert-deftest ruri-test/byte-compile-after-compile-is-optional-and-safe ()
+  (let* ((dir (make-temp-file "ruri elc " t))
+         (source (expand-file-name "elced.ruri" dir))
+         (output (expand-file-name "elced.el" dir))
+         (elc (concat output "c"))
+         ruri-byte-compile-after-compile)
+    (with-temp-file source
+      (insert "command :elced_cmd do\n"
+              "  interactive\n"
+              "  el.insert(\"ok\")\n"
+              "end\n"))
+    ;; Default off: no .elc appears.
+    (should-not ruri-byte-compile-after-compile)
+    (ruri-compile-file source)
+    (should (file-exists-p output))
+    (should-not (file-exists-p elc))
+    ;; Opting in produces a .elc and keeps the .el.
+    (let ((ruri-byte-compile-after-compile t))
+      (ruri-compile-file source))
+    (should (file-exists-p elc))
+    (should (file-exists-p output))
+    ;; A byte-compile failure reports an error but keeps the `.el'.
+    (with-temp-file output
+      (insert "(defun (broken\n"))
+    (should-error (ruri--byte-compile output))
+    (should (file-exists-p output))))
+
+(ert-deftest ruri-test/mode-forms-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri modes " t))
+         (source (expand-file-name "modes.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_body_count, 0\n"
+              "\n"
+              "mode :ruri_test_fancy_mode,\n"
+              "     \"A fancy minor mode.\",\n"
+              "     init_value: nil,\n"
+              "     lighter: \" Fcy\" do\n"
+              "  assign :ruri_test_body_count, var(:ruri_test_body_count) + 1\n"
+              "end\n"
+              "\n"
+              "derived_mode :ruri_test_special, :text_mode, \"RuriT\" do\n"
+              "  doc \"A derived mode for testing.\"\n"
+              "end\n"
+              "\n"
+              "provide :ruri_test_modes\n"))
+    (ruri-load-file source)
+    ;; define-minor-mode generated the function, the state variable, and
+    ;; the hook variable; the body runs on every toggle.
+    (should (fboundp 'ruri-test-fancy-mode))
+    (should (boundp 'ruri-test-fancy-mode))
+    (should (boundp 'ruri-test-fancy-mode-hook))
+    (should (= 0 ruri-test-body-count))
+    ;; From Lisp a no-argument call enables the mode; toggling is the
+    ;; interactive-only convention, so drive it with explicit arguments.
+    (with-temp-buffer
+      (ruri-test-fancy-mode 4)
+      (should (eq t ruri-test-fancy-mode))
+      (should (= 1 ruri-test-body-count))
+      (ruri-test-fancy-mode -1)
+      (should (null ruri-test-fancy-mode))
+      (should (= 2 ruri-test-body-count)))
+    ;; The :lighter keyword lands in minor-mode-alist as the entry's
+    ;; second element.
+    (with-temp-buffer
+      (ruri-test-fancy-mode 4)
+      (should (equal " Fcy"
+                     (cadr (assq 'ruri-test-fancy-mode minor-mode-alist)))))
+    ;; define-derived-mode reports its parent.
+    (with-temp-buffer
+      (ruri-test-special)
+      (should (derived-mode-p 'text-mode))
+      (should (equal "RuriT" mode-name)))))
+
+(ert-deftest ruri-test/assign-local-writes-buffer-locals ()
+  (let* ((dir (make-temp-file "ruri assign local " t))
+         (source (expand-file-name "assign-local.ruri" dir)))
+    (with-temp-file source
+      (insert "command :ruri_test_local_write_cmd do\n"
+              "  interactive\n"
+              "  assign_local :ruri_test_local_marker, \"set\"\n"
+              "end\n"))
+    (ruri-load-file source)
+    (with-temp-buffer
+      (call-interactively #'ruri-test-local-write-cmd)
+      (should (equal "set" ruri-test-local-marker))
+      (should (local-variable-p 'ruri-test-local-marker)))
+    ;; The variable was never defined globally, so the default binding
+    ;; is still void: the write only made a buffer-local.
+    (should-error (default-value 'ruri-test-local-marker)
+                  :type 'void-variable)))
+
+(ert-deftest ruri-test/cmake-mode-port-runs-in-emacs ()
+  (let* ((dir (make-temp-file "ruri cmake " t))
+         (original (expand-file-name "examples/cmake-mode.ruri" ruri-test--root))
+         (source (expand-file-name "cmake-mode.ruri" dir)))
+    (copy-file original source t)
+    (ruri-load-file source)
+    ;; The derived mode exists and is registered on prog-mode.
+    (should (fboundp 'cmake-mode))
+    (with-temp-buffer
+      (insert "if(FOO)\nset(BAR 1)\nendif()\n")
+      (cmake-mode)
+      (should (derived-mode-p 'prog-mode))
+      (should (equal "CMake" mode-name))
+      (should (equal "#" comment-start))
+      ;; indent-line-function and the defun navigation hooks were
+      ;; installed buffer-locally by the mode body.
+      (should (eq indent-line-function 'cmake-indent))
+      (should (eq beginning-of-defun-function 'cmake-beginning-of-defun))
+      (should (eq end-of-defun-function 'cmake-end-of-defun))
+      (should (equal '(cmake-font-lock-keywords) font-lock-defaults))
+      ;; The ported indentation engine indents inside a block and
+      ;; outdents on the closing line.
+      (goto-char (point-min))
+      (forward-line 1)
+      (cmake-indent)
+      (should (= 2 (current-indentation)))
+      (forward-line 1)
+      (cmake-indent)
+      (should (= 0 (current-indentation))))
+    ;; defcustoms and constants from the port keep their values.
+    (should (equal "cmake" cmake-mode-cmake-executable))
+    (should (= 2 cmake-tab-width))
+    (should (commandp 'cmake-help-command))
+    (should (commandp 'cmake-unscreamify-buffer))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))
@@ -681,7 +935,8 @@
       (org-fragtog--disable-frag nil t)
       (org-fragtog--disable-frag nil)
       (should (null org-fragtog--timer))
-      (org-fragtog-mode)
+      ;; From Lisp a no-arg call enables; disable explicitly.
+      (org-fragtog-mode -1)
       (should (null org-fragtog-mode))
       (should (not (memq (quote org-fragtog--post-cmd) post-command-hook))))))
 

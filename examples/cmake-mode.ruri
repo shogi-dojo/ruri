@@ -1,0 +1,493 @@
+# cmake-mode written in Ruri — a conversion of Kitware's cmake-mode.el
+# (Copyright 2000-2024 Kitware, Inc. and Contributors; BSD 3-Clause).
+# The original is preserved verbatim in test/fixtures/cmake-mode-original.el,
+# and the license its header refers to in test/fixtures/cmake-mode-LICENSE.rst.
+#
+# This is a semantic conversion, not byte-identical. The known deviations
+# from source-level fidelity, each a Ruri gap recorded for the next phase:
+#
+# 1. `rx` macro forms are not expressible (their sub-forms are unevaluated
+#    and Ruri has no character literals); el.rx is rejected at compile
+#    time rather than miscompiling. Static rx forms were pre-expanded
+#    to the equivalent literal regexp strings; the dynamic alternations are
+#    still computed at runtime with el.rx_to_string over a quasiquote with
+#    splices, exactly as the original does.
+# 2. Character literals (`?\(`) are not in the language. Where the original
+#    passes characters (rx data, modify-syntax-entry), the port uses integer
+#    code points or one-character strings, which the same Elisp functions
+#    accept.
+# 3. (Resolved on review: the rx operator symbol `*` is writable directly
+#    as the Ruri literal `:*` — inside quoted and quasiquoted data it emits
+#    `*` unquoted, so no runtime el.intern is needed.)
+# 4. `if`/`unless` are not expressions in argument or initializer position,
+#    so conditionals that the original inlines into a let* initializer or
+#    call argument are computed into locals first.
+# 5. Dynamic let-bindings (case-fold-search, resize-mini-windows) have no
+#    Ruri construct; the port saves and restores them manually with
+#    var/assign around the affected region.
+# 6. Top-level executable forms — the (or ... (setq ...)) syntax-table
+#    memoization and the progn registering auto-mode-alist entries — are
+#    not expressible in Ruri. The syntax table becomes a defconst whose
+#    value is the constructing expression; auto-mode-alist registration is
+#    omitted (users add CMakeLists.txt/*.cmake to auto-mode-alist
+#    themselves or through package.el's generated autoloads).
+# 7. cmake--syntax-propertize-function relies on the syntax-propertize-rules
+#    macro (unevaluated rule forms), now rejected at compile time rather
+#    than miscompiling. Bracket-argument/comment syntax
+#    propertization #[[...]] is therefore omitted; highlighting and
+#    indentation work without it.
+#
+# Compile with:
+#   bundle exec ruby bin/ruri compile examples/cmake-mode.ruri --output cmake-mode.el
+
+require :rst
+require :rx
+
+custom :cmake_mode_cmake_executable, "cmake",
+       "The name of the cmake executable.\n\nThis can be either absolute or looked up in $PATH.  You can also\nset the path with these commands:\n (setenv \"PATH\" (concat (getenv \"PATH\") \";C:\\\\Program Files\\\\CMake 2.8\\\\bin\"))\n (setenv \"PATH\" (concat (getenv \"PATH\") \":/usr/local/cmake/bin\"))",
+       type: :file,
+       group: :cmake
+
+# Keywords
+constant :cmake_keywords_block_open, quote(list("BLOCK", "IF", "MACRO", "FOREACH", "ELSE", "ELSEIF", "WHILE", "FUNCTION"))
+constant :cmake_keywords_block_close, quote(list("ENDBLOCK", "ENDIF", "ENDFOREACH", "ENDMACRO", "ELSE", "ELSEIF", "ENDWHILE", "ENDFUNCTION"))
+constant :cmake_keywords, el.delete_dups(el.append(var(:cmake_keywords_block_open), var(:cmake_keywords_block_close), nil))
+
+# Regular expressions used by line indentation function.
+constant :cmake_regex_blank, "^[ \t]*$"
+constant :cmake_regex_comment, "#.*"
+constant :cmake_regex_paren_left, "("
+constant :cmake_regex_paren_right, ")"
+constant :cmake_regex_closing_parens_line, el.concat("^[[:space:]]*\\(", var(:cmake_regex_paren_right), "+\\)[[:space:]]*$")
+# Pre-expanded from (rx ?\" (* (or (not (any ?\" ?\\)) (and ?\\ anything))) ?\").
+constant :cmake_regex_argument_quoted, "\"\\(?:[^\"\\]\\|\\\\[^z-a]\\)*\""
+# Pre-expanded from the rx unquoted-argument form in the original.
+constant :cmake_regex_argument_unquoted, "\\(?:[^\n\"#()\\[:space:]]\\|\\\\.\\)\\(?:[^\n#()\\[:space:]]\\|\\\\.\\)*"
+constant :cmake_regex_token, el.rx_to_string(quasiquote(list(:group, list(:or, list(:regexp, unquote(var(:cmake_regex_comment))), 40, 41, list(:regexp, unquote(var(:cmake_regex_argument_unquoted))), list(:regexp, unquote(var(:cmake_regex_argument_quoted)))))))
+constant :cmake_regex_indented, el.rx_to_string(quasiquote(list(:and, :bol, list(:*, list(:group, list(:or, list(:regexp, unquote(var(:cmake_regex_token))), list(:any, :space, 10)))))))
+constant :cmake_regex_block_open, el.rx_to_string(quasiquote(list(:and, :symbol_start, list(:or, splice(el.append(var(:cmake_keywords_block_open), el.mapcar(function(:downcase), var(:cmake_keywords_block_open))))), :symbol_end)))
+constant :cmake_regex_block_close, el.rx_to_string(quasiquote(list(:and, :symbol_start, list(:or, splice(el.append(var(:cmake_keywords_block_close), el.mapcar(function(:downcase), var(:cmake_keywords_block_close))))), :symbol_end)))
+constant :cmake_regex_close, el.rx_to_string(quasiquote(list(:and, :bol, list(:*, :space), list(:regexp, unquote(var(:cmake_regex_block_close))), list(:*, :space), list(:regexp, unquote(var(:cmake_regex_paren_left))))))
+constant :cmake_regex_token_paren_left, el.concat("^", var(:cmake_regex_paren_left))
+constant :cmake_regex_token_paren_right, el.concat("^", var(:cmake_regex_paren_right))
+
+# Line indentation helper functions
+
+function :cmake_line_starts_inside_string do
+  doc "Determine whether the beginning of the current line is in a string."
+  el.save_excursion do
+    el.beginning_of_line
+    parse_end = el.point
+    el.goto_char(el.point_min)
+    el.nth(3, el.parse_partial_sexp(el.point, parse_end))
+  end
+end
+
+function :cmake_find_last_indented_line do
+  doc "Move to the beginning of the last line that has meaningful indentation."
+  let do |point_start, region|
+    point_start = el.point
+    el.forward_line(-1)
+    region = el.buffer_substring_no_properties(el.point, point_start)
+    while !el.bobp && (el.looking_at(var(:cmake_regex_blank)) || el.cmake_line_starts_inside_string || !(el.string_match(var(:cmake_regex_indented), region) && el.length(region) == el.match_end(0)))
+      el.forward_line(-1)
+      region = el.buffer_substring_no_properties(el.point, point_start)
+    end
+  end
+end
+
+# Line indentation.
+
+custom :cmake_tab_width, 2,
+       "Number of columns to indent cmake blocks",
+       type: :integer,
+       group: :cmake
+
+command :cmake_indent do
+  doc "Indent current line as CMake code."
+  interactive
+  unless el.cmake_line_starts_inside_string
+    if el.bobp
+      el.cmake_indent_line_to(0)
+    else
+      let do |cur_indent|
+        el.save_excursion do
+          el.beginning_of_line
+          point_start = el.point
+          closing_parens_only = el.looking_at(var(:cmake_regex_closing_parens_line))
+          # The original let-binds case-fold-search dynamically; Ruri has
+          # no dynamic binding construct, so save and restore manually.
+          saved_case_fold = var(:case_fold_search)
+          assign :case_fold_search, true
+          token = nil
+          el.cmake_find_last_indented_line
+          cur_indent = el.current_indentation
+          if closing_parens_only
+            let do |open_parens = 0|
+              while el.re_search_forward(var(:cmake_regex_token), point_start, true)
+                token = el.match_string(0)
+                if el.string_match(var(:cmake_regex_token_paren_left), token)
+                  open_parens = open_parens + 1
+                elsif el.string_match(var(:cmake_regex_token_paren_right), token)
+                  open_parens = open_parens - 1
+                end
+              end
+              unless open_parens > 0
+                cur_indent = cur_indent - var(:cmake_tab_width)
+              end
+            end
+          else
+            unless el.looking_at(var(:cmake_regex_closing_parens_line))
+              while el.re_search_forward(var(:cmake_regex_token), point_start, true)
+                token = el.match_string(0)
+                if el.string_match(var(:cmake_regex_token_paren_left), token) || (el.string_match(var(:cmake_regex_block_open), token) && el.looking_at(el.concat("[ \t]*", var(:cmake_regex_paren_left))))
+                  cur_indent = cur_indent + var(:cmake_tab_width)
+                end
+                if el.string_match(var(:cmake_regex_token_paren_right), token)
+                  cur_indent = cur_indent - var(:cmake_tab_width)
+                end
+              end
+            end
+            el.goto_char(point_start)
+            if el.looking_at(var(:cmake_regex_close))
+              cur_indent = cur_indent - var(:cmake_tab_width)
+            end
+          end
+          assign :case_fold_search, saved_case_fold
+        end
+        el.cmake_indent_line_to(el.max(cur_indent, 0))
+      end
+    end
+  end
+end
+
+function :cmake_point_in_indentation do
+  doc "Return whether point is inside the line's indentation."
+  el.string_match("^[ \t]*$", el.buffer_substring(el.line_beginning_position, el.point))
+end
+
+function :cmake_indent_line_to do |column|
+  doc "Indent the current line to COLUMN.\nIf point is within the existing indentation it is moved to the end of\nthe indentation.  Otherwise it retains the same position on the line."
+  if el.cmake_point_in_indentation
+    el.indent_line_to(column)
+  else
+    el.save_excursion do
+      el.indent_line_to(column)
+    end
+  end
+end
+
+# Helper functions for buffer
+
+command :cmake_unscreamify_buffer do
+  doc "Convert all CMake commands to lowercase in buffer."
+  interactive
+  el.save_excursion do
+    el.goto_char(el.point_min)
+    while el.re_search_forward("^\\([ \t]*\\)\\_<\\(\\(?:\\w\\|\\s_\\)+\\)\\_>\\([ \t]*(\\)", nil, true)
+      el.replace_match(
+        el.concat(
+          el.match_string(1),
+          el.downcase(el.match_string(2)),
+          el.match_string(3)
+        ),
+        true
+      )
+    end
+  end
+end
+
+# Navigation / marking by function or macro
+
+constant :cmake__regex_defun_start, "^[[:space:]]*\\(?:function\\|macro\\)[[:space:]]*("
+constant :cmake__regex_defun_end, "^[[:space:]]*end\\(?:function\\|macro\\)[[:space:]]*([^)]*)"
+
+command :cmake_beginning_of_defun do
+  doc "Move backward to the beginning of a CMake function or macro.\n\nReturn t unless search stops due to beginning of buffer."
+  interactive
+  unless el.region_active_p
+    el.push_mark
+  end
+  saved_case_fold = var(:case_fold_search)
+  assign :case_fold_search, true
+  el.re_search_backward(var(:cmake__regex_defun_start), nil, :move)
+  assign :case_fold_search, saved_case_fold
+end
+
+command :cmake_end_of_defun do
+  doc "Move forward to the end of a CMake function or macro.\n\nReturn t unless search stops due to end of buffer."
+  interactive
+  unless el.region_active_p
+    el.push_mark
+  end
+  saved_case_fold = var(:case_fold_search)
+  assign :case_fold_search, true
+  found = el.re_search_forward(var(:cmake__regex_defun_end), nil, :move)
+  assign :case_fold_search, saved_case_fold
+  if found
+    el.forward_line
+  end
+end
+
+# Keyword highlighting regex-to-face map.
+constant :cmake_font_lock_keywords,
+         quasiquote(
+           list(
+             cons(
+               unquote(el.rx_to_string(quasiquote(list(:and, :symbol_start, list(:or, splice(var(:cmake_keywords))), :symbol_end)))),
+               :font_lock_keyword_face
+             ),
+             list(
+               unquote("\\_<\\(\\(?:[[:word:]]\\|\\s_\\)+\\)[[:blank:]]*("),
+               1,
+               :font_lock_function_name_face
+             ),
+             list(
+               unquote("\\${\\([+./_[:alnum:]-]+\\)}"),
+               1,
+               :font_lock_variable_name_face,
+               true
+             )
+           )
+         ),
+         "Highlighting expressions for CMake mode."
+
+function :cmake__make_syntax_table do
+  doc "Build the CMake syntax table."
+  let do |table = el.make_syntax_table|
+    # Ruri has no character literals; Emacs characters are integers.
+    el.modify_syntax_entry(40, "()", table)
+    el.modify_syntax_entry(41, ")(", table)
+    el.modify_syntax_entry(35, "<", table)
+    el.modify_syntax_entry(10, ">", table)
+    el.modify_syntax_entry(36, "'", table)
+    table
+  end
+end
+
+constant :cmake_mode_syntax_table,
+         el.cmake__make_syntax_table,
+         "Syntax table for CMake mode."
+
+variable :cmake_mode_hook, nil, "Hook run after entering CMake mode."
+
+# Mode definition.
+
+derived_mode :cmake_mode, :prog_mode, "CMake" do
+  doc "Major mode for editing CMake source files."
+  # Setup jumping to beginning/end of a CMake function/macro.
+  el.set(el.make_local_variable(:beginning_of_defun_function), function(:cmake_beginning_of_defun))
+  el.set(el.make_local_variable(:end_of_defun_function), function(:cmake_end_of_defun))
+  # Setup font-lock mode.
+  el.set(el.make_local_variable(:font_lock_defaults), quote(list(:cmake_font_lock_keywords)))
+  # Setup indentation function.
+  el.set(el.make_local_variable(:indent_line_function), :cmake_indent)
+  # Setup comment syntax.
+  el.set(el.make_local_variable(:comment_start), "#")
+  # The original also installs a syntax-propertize-function built with
+  # the syntax-propertize-rules macro; see the header deviation note.
+end
+
+# Help mode starts here
+
+command :cmake_command_run do |type, topic = nil, buffer = nil|
+  doc "Runs the command cmake with the arguments specified.  The\noptional argument topic will be appended to the argument list."
+  interactive "s"
+  let do |bufname, buf, command|
+    dash = nil
+    if topic
+      dash = "-"
+    end
+    if buffer
+      bufname = buffer
+    else
+      bufname = el.concat("*CMake", type, dash, topic, "*")
+    end
+    if el.get_buffer(bufname)
+      buf = el.get_buffer(bufname)
+    else
+      buf = el.generate_new_buffer(bufname)
+    end
+    quoted_topic = topic
+    if topic
+      quoted_topic = el.shell_quote_argument(topic)
+    end
+    command = el.concat(var(:cmake_mode_cmake_executable), " ", type, " ", quoted_topic)
+    # The original let-binds resize-mini-windows dynamically.
+    saved_resize = var(:resize_mini_windows)
+    assign :resize_mini_windows, nil
+    el.shell_command(command, buf)
+    el.save_selected_window do
+      el.select_window(el.display_buffer(buf, :not_this_window))
+      el.cmake_mode
+      el.read_only_mode(1)
+      el.view_mode(1)
+    end
+    assign :resize_mini_windows, saved_resize
+  end
+end
+
+command :cmake_command_run_help do |type, topic = nil, buffer = nil|
+  doc "Like `cmake-command-run', but rendered in `rst-mode'."
+  interactive "s"
+  let do |bufname, buf, command|
+    dash = nil
+    if topic
+      dash = "-"
+    end
+    if buffer
+      bufname = buffer
+    else
+      bufname = el.concat("*CMake", type, dash, topic, "*")
+    end
+    if el.get_buffer(bufname)
+      buf = el.get_buffer(bufname)
+    else
+      buf = el.generate_new_buffer(bufname)
+    end
+    quoted_topic = topic
+    if topic
+      quoted_topic = el.shell_quote_argument(topic)
+    end
+    command = el.concat(var(:cmake_mode_cmake_executable), " ", type, " ", quoted_topic)
+    saved_resize = var(:resize_mini_windows)
+    assign :resize_mini_windows, nil
+    el.shell_command(command, buf)
+    el.save_selected_window do
+      el.select_window(el.display_buffer(buf, :not_this_window))
+      el.rst_mode
+      el.read_only_mode(1)
+      el.view_mode(1)
+    end
+    assign :resize_mini_windows, saved_resize
+  end
+end
+
+command :cmake_help_list_commands do
+  doc "Prints out a list of the cmake commands."
+  interactive
+  el.cmake_command_run_help("--help-command-list")
+end
+
+variable :cmake_commands, nil, "List of available topics for --help-command."
+variable :cmake_help_command_history, nil, "Command read history."
+variable :cmake_modules, nil, "List of available topics for --help-module."
+variable :cmake_help_module_history, nil, "Module read history."
+variable :cmake_variables, nil, "List of available topics for --help-variable."
+variable :cmake_help_variable_history, nil, "Variable read history."
+variable :cmake_properties, nil, "List of available topics for --help-property."
+variable :cmake_help_property_history, nil, "Property read history."
+variable :cmake_help_complete_history, nil, "Complete help read history."
+
+variable :cmake_string_to_list_symbol,
+         quote(list(
+           list("command", :cmake_commands, :cmake_help_command_history),
+           list("module", :cmake_modules, :cmake_help_module_history),
+           list("variable", :cmake_variables, :cmake_help_variable_history),
+           list("property", :cmake_properties, :cmake_help_property_history)
+         ))
+
+function :cmake_get_list do |listname|
+  doc "If the value of LISTVAR is nil, run cmake --help-LISTNAME-list\nand store the result as a list in LISTVAR."
+  listvar = el.car(el.cdr(el.assoc(listname, var(:cmake_string_to_list_symbol))))
+  if !el.symbol_value(listvar)
+    temp_buffer_name = "*CMake Temporary*"
+    el.save_window_excursion do
+      el.cmake_command_run_help(el.concat("--help-", listname, "-list"), nil, temp_buffer_name)
+      el.with_current_buffer(temp_buffer_name) do
+        el.set(listvar, el.split_string(el.buffer_substring_no_properties(el.point_min, el.point_max), "\n", true))
+      end
+    end
+  end
+  el.symbol_value(listvar)
+end
+
+require :thingatpt
+
+function :cmake_symbol_at_point do
+  doc "Return the symbol at point as a string, or nil."
+  symbol = el.symbol_at_point
+  if symbol && !el.null(symbol)
+    el.symbol_name(symbol)
+  end
+end
+
+function :cmake_help_type do |type|
+  doc "Read a CMake help topic of the given TYPE with completion."
+  let do |default_entry, history, input|
+    default_entry = el.cmake_symbol_at_point
+    history = el.car(el.cdr(el.cdr(el.assoc(type, var(:cmake_string_to_list_symbol)))))
+    input = el.completing_read(
+      el.format("CMake %s: ", type),
+      el.cmake_get_list(type),
+      nil,
+      true,
+      default_entry,
+      history
+    )
+    if input == ""
+      el.error("No argument given")
+    else
+      input
+    end
+  end
+end
+
+command :cmake_help_command do
+  doc "Prints out the help message for the command the cursor is on."
+  interactive
+  el.cmake_command_run_help("--help-command", el.cmake_help_type("command"), "*CMake Help*")
+end
+
+command :cmake_help_module do
+  doc "Prints out the help message for the module the cursor is on."
+  interactive
+  el.cmake_command_run_help("--help-module", el.cmake_help_type("module"), "*CMake Help*")
+end
+
+command :cmake_help_variable do
+  doc "Prints out the help message for the variable the cursor is on."
+  interactive
+  el.cmake_command_run_help("--help-variable", el.cmake_help_type("variable"), "*CMake Help*")
+end
+
+command :cmake_help_property do
+  doc "Prints out the help message for the property the cursor is on."
+  interactive
+  el.cmake_command_run_help("--help-property", el.cmake_help_type("property"), "*CMake Help*")
+end
+
+command :cmake_help do
+  doc "Queries for any of the four available help topics and prints out the\nappropriate page."
+  interactive
+  let do |default_entry = el.cmake_symbol_at_point|
+    command_list = el.cmake_get_list("command")
+    variable_list = el.cmake_get_list("variable")
+    module_list = el.cmake_get_list("module")
+    property_list = el.cmake_get_list("property")
+    all_words = el.append(command_list, variable_list, module_list, property_list)
+    input = el.completing_read(
+      "CMake command/module/variable/property: ",
+      all_words,
+      nil,
+      true,
+      default_entry,
+      :cmake_help_complete_history
+    )
+    if input == ""
+      el.error("No argument given")
+    elsif el.member(input, command_list)
+      el.cmake_command_run_help("--help-command", input, "*CMake Help*")
+    elsif el.member(input, variable_list)
+      el.cmake_command_run_help("--help-variable", input, "*CMake Help*")
+    elsif el.member(input, module_list)
+      el.cmake_command_run_help("--help-module", input, "*CMake Help*")
+    elsif el.member(input, property_list)
+      el.cmake_command_run_help("--help-property", input, "*CMake Help*")
+    else
+      el.error("Not a know help topic.")
+    end
+  end
+end
+
+provide :cmake_mode

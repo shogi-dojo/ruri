@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.12
+# Ruri language contract — version 0.15
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.12: every construct below is supported,
+is the exact scope of version 0.15: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -47,6 +47,7 @@ everything else is rejected with a source position.
 | `el.save_excursion do … end` | Emits an Elisp form with the Ruby block appended as body forms: `(save-excursion …)`. Positional arguments, nested statements, locals, and conditionals compose inside the body. Block parameters are rejected. |
 | `name = el.buffer_name` | Assigns a definition-local variable. The right-hand side may be any supported expression. A local is visible throughout its command or function, including before its first assignment (where its value is `nil`) and inside nested blocks. Compound assignments are rejected. |
 | `var(:fill_column)` | Reads an Emacs Lisp (dynamic, global, or buffer-local) variable, emitting the bare symbol `fill-column`. Definition-locals are referenced by their Ruby name instead. Exactly one literal symbol argument matching `[a-z][a-z0-9_]*`; `t` and `nil` are rejected. |
+| `assign_local :name, value [, :name2, value2 …]` | Emits `(setq-local name value …)`, making the variables buffer-local in the current buffer. Same shape and literal-symbol rules as `assign`; a typed form because the name is an unevaluated position. |
 | `assign :name, value [, :name2, value2 …]` | Emits `(setq name value …)`, writing an Emacs Lisp (dynamic or buffer-local) variable rather than a definition-local. Variable names are literal symbols in unevaluated position, so this is a typed form rather than an `el.setq` call, which would wrongly quote the symbol. Requires an even number of arguments; every odd position must be a literal symbol matching `[a-z][a-z0-9_]*`. |
 | `keyword :begin` | Emits the self-quoting Elisp keyword `:begin`. A plain symbol literal would emit `(quote begin)`, which is the wrong shape where keywords are expected, such as `org-element-property` arguments. Exactly one literal symbol argument matching `[a-z][a-z0-9_]*`. |
 | `if condition … elsif condition … else … end` | Evaluates supported expression conditions with Emacs Lisp truth semantics. Branches contain ordinary supported statements. `elsif` and `else` are optional. |
@@ -62,6 +63,8 @@ everything else is rejected with a source position.
 | `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`, `-a`, `+a` | Arithmetic lowered to `+`, `-`, `*`, `/`, `mod`, `expt`, unary `-`, and `identity`. Operand and division behavior follows Emacs Lisp. |
 | `while condition … end`, `until condition … end` | Repeatedly executes the body. `until` lowers to `while` with a negated condition. |
 | `items.each do \|item\| … end` | Iterates for side effects using `mapc` and a lexical lambda. Exactly one required block parameter is allowed. The collection may be any supported expression. |
+| `mode :name [, "docstring"] [, key: expression …] do … end` | Emits the real `(define-minor-mode name ["doc"] [:key expr …] body…)` macro call and lets Emacs expand it; Ruri never replicates the expansion. The name defines both a function and a state variable and is checked against both namespaces. Keyword pairs follow the `custom` rules (`lighter: " M"`, `init_value: nil`, `global: true`, `keymap: var(:map)`, `group:`, and so on, normalized to `:kebab-case`). The body holds ordinary statements, runs whenever the mode is enabled, and participates in normal local scoping. Top-level only. |
+| `derived_mode :child, :parent [, "mode line"] do … end` | Emits the real `(define-derived-mode child parent ["mode line"] ["doc"] body…)` macro call. The child and parent are literal symbols in unevaluated positions; the docstring is the established leading `doc` statement of the body. The body holds ordinary statements. Top-level only. |
 | `count.times do \|i\| … end` | Counting loop lowering to `dotimes` with a hygienic counter: `(dotimes (ruri--local-i count) …)`. Exactly one required block parameter, no call arguments; valid as a statement only, and its value is `nil` (matching `dotimes`, not Ruby's `Integer#times`). The counter starts at 0 and the body may use `break`/`next`. |
 | `items.map do \|item\| … end`, `items.select do \|item\| … end`, `items.find do \|item\| … end` | Value-producing iteration lowering to `mapcar`, `seq-filter`, and `seq-find`. The block's final expression maps, keeps, or tests each element. Exactly one required block parameter; `select` and `find` require `require :seq` in the source file. |
 | `break [value]`, `next [value]` | Exits the enclosing `while`, `until`, `.each`, `.map`, `.select`, or `.find` block through a compiler-generated catch tag: `next` ends one iteration (its value is that element's result in the iteration forms), `break` unwinds the whole loop with the value as its result. Must sit inside the loop, not across an `fn` boundary. Loops without exits emit no extra code. |
@@ -95,10 +98,24 @@ everything else is rejected with a source position.
   arguments would be emitted as evaluated calls and fail only at runtime),
   so they are rejected at compile time with a pointer to the typed form
   that covers them: `el.let`/`el.let_star` (use `let`), `el.setq`
-  (use `assign`), `el.dolist`/`el.cl_dolist` (use `.each`), `el.dotimes`
+  (use `assign`), `el.setq_local` (use `assign_local`),
+  `el.dolist`/`el.cl_dolist` (use `.each`), `el.dotimes`
   and `el.cl_dotimes` (use `.times`), `el.pcase`, `el.cl_loop`,
   `el.cl_destructuring_bind`, `el.seq_let`, `el.when_let`, and
-  `el.if_let` (no Ruri equivalent; rejected outright). The place-taking
+  `el.if_let` (no Ruri equivalent; rejected outright). The same rule
+  covers definition forms whose first argument is a name in an
+  unevaluated symbol position: `el.defun`, `el.cl_defun`, `el.defsubst`,
+  and `el.defmacro`; `el.defvar`, `el.defconst`, `el.defvar_local`, and
+  `el.defcustom` (use `variable`, `constant`, `variable_local`, and
+  `custom`); `el.cl_defstruct`; and the mode definitions `el.define_minor_mode`
+  (use `mode`) and `el.define_derived_mode` (use `derived_mode`).
+  `el.define_globalized_minor_mode` and `el.define_generic_mode` remain
+  rejected with no Ruri equivalent. The same rule covers macros whose
+  whole body is unevaluated: `el.rx` (pass a regexp string, or build one
+  at runtime with `el.rx_to_string` over quoted data) and
+  `el.syntax_propertize_rules` (no Ruri equivalent). Evaluated-name forms are deliberately not on
+  this list: `el.defalias`'s first argument is evaluated, so the quote a
+  symbol literal receives is exactly correct. The place-taking
   operators `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf`
   are supported as typed forms (see the construct table).
 
@@ -376,6 +393,10 @@ structure safely:
    `el.setf`/`el.push`/`el.pop`/`el.cl_incf`/`el.cl_decf`, compile-time
    rejection of `el.*` calls with unevaluated binding positions, and
    nested quasiquotation with Common Lisp depth semantics.
+7. Mode definitions; v0.15 provides the `mode` and `derived_mode` forms
+   emitting real `define-minor-mode` and `define-derived-mode` macro
+   calls, and completes the rejection of definition macros with
+   unevaluated name positions (v0.14).
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still

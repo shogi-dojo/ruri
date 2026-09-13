@@ -3,9 +3,7 @@
 # test/fixtures/org-fragtog-original.el).
 #
 # This is a semantic conversion, not byte-identical: define-minor-mode is
-# emulated with a defvar-local plus a toggle function, and the original
-# let* bindings become a scoped Ruri let block (prev_frag in post_cmd)
-# plus sequential Ruri locals. Compile with:
+# expressed with the real `mode` construct. Compile with:
 #   bundle exec ruby bin/ruri compile examples/org-fragtog.ruri --output org-fragtog.el
 
 require :org
@@ -31,13 +29,12 @@ variable_local :org_fragtog__prev_point, nil,
 variable_local :org_fragtog__timer, nil,
                "Current active timer."
 
-variable_local :org_fragtog_mode, nil,
-               "Non-nil if Org-Fragtog mode is enabled.\nUse the function `org-fragtog-mode' to toggle this mode."
-
-function :org_fragtog_mode do
-  doc "A minor mode that automatically toggles Org mode LaTeX fragment previews.\nFragment previews are disabled for editing when your cursor steps onto them,\nand re-enabled when the cursor leaves."
+mode :org_fragtog_mode,
+     "A minor mode that automatically toggles Org mode LaTeX fragment previews.\nFragment previews are disabled for editing when your cursor steps onto them,\nand re-enabled when the cursor leaves.",
+     init_value: nil do
+  # Fix nil error in `org-element-context' when using `org-fragtog'
+  # without Org mode.
   assign :org_complex_heading_regexp, var(:org_complex_heading_regexp) || ""
-  assign :org_fragtog_mode, !var(:org_fragtog_mode)
   if var(:org_fragtog_mode)
     el.add_hook(:post_command_hook, function(:org_fragtog__post_cmd), nil, true)
   else

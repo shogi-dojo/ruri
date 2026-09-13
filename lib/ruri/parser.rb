@@ -23,10 +23,18 @@ module Ruri
     # arguments are emitted as evaluated calls and the generated Elisp
     # fails only at runtime, so each name is rejected at compile time
     # with a pointer to the Ruri construct that covers it.
+    #
+    # Admission rule: the form's first argument is a name or symbol in an
+    # unevaluated position, so the quote a symbol literal gets under the
+    # generic call path (el.foo(:bar) -> (foo 'bar)) breaks or silently
+    # miscompiles it. Every entry was verified in batch Emacs with the
+    # quoted name before admission; evaluated-name forms such as
+    # el.defalias (whose quoted symbol is correct) stay off the table.
     UNEVALUATED_POSITION_CALLS = {
       "let" => "use the Ruri let form",
       "let-star" => "use the Ruri let form; it binds sequentially",
       "setq" => "use assign(:name, value)",
+      "setq-local" => "use assign_local(:name, value)",
       "dolist" => "use collection.each do |item| ... end",
       "cl-dolist" => "use collection.each do |item| ... end",
       "dotimes" => "use count.times do |i| ... end",
@@ -36,7 +44,22 @@ module Ruri
       "cl-destructuring-bind" => "Ruri cannot express destructuring patterns",
       "seq-let" => "Ruri cannot express destructuring patterns",
       "when-let" => "bind with the Ruri let form and branch with if",
-      "if-let" => "bind with the Ruri let form and branch with if"
+      "if-let" => "bind with the Ruri let form and branch with if",
+      "defun" => "use function or command",
+      "defconst" => "use constant",
+      "defvar" => "use variable or variable_local",
+      "defvar-local" => "use variable_local",
+      "defcustom" => "use custom",
+      "defmacro" => "Ruri cannot define macros; write the macro in Elisp and require it",
+      "defsubst" => "use function; Ruri cannot express defsubst inlining",
+      "cl-defun" => "use function or command",
+      "cl-defstruct" => "Ruri cannot express cl-defstruct records",
+      "define-minor-mode" => "use the mode form",
+      "define-globalized-minor-mode" => "Ruri cannot express globalized modes; write the mode in Elisp and require it",
+      "define-derived-mode" => "use the derived_mode form",
+      "define-generic-mode" => "Ruri cannot express generic modes; write the mode in Elisp and require it",
+      "rx" => "Ruri cannot express rx forms; pass a regexp string, or use el.rx_to_string over quoted data",
+      "syntax-propertize-rules" => "Ruri cannot express syntax-propertize rules; write them in Elisp and require them"
     }.freeze
 
     # Emacs Lisp place-taking operators routed into the typed
@@ -219,6 +242,8 @@ module Ruri
       when :variable then parse_variable_definition(node, "variable", "defvar", false)
       when :constant then parse_variable_definition(node, "constant", "defconst", true)
       when :custom then parse_custom_definition(node)
+      when :mode then parse_mode_definition(node)
+      when :derived_mode then parse_derived_mode_definition(node)
       when :variable_local then parse_variable_definition(node, "variable_local", "defvar-local", false)
       when :require then parse_feature_form(node, :require)
       when :provide then parse_feature_form(node, :provide)
@@ -474,6 +499,156 @@ module Ruri
       )
     end
 
+    # `mode :name [, "docstring"] [, key: expression …] do … end` lowers to
+    # a real `(define-minor-mode …)` macro call — Emacs expands it, Ruri
+    # never replicates the expansion. The mode name is an unevaluated
+    # symbol position, so this is a typed form rather than an el.* call.
+    # A mode defines both a function and a variable, so its name is
+    # registered in both namespaces.
+    def parse_mode_definition(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `mode` with explicit receiver")
+        return
+      end
+      unless node.block
+        error(node.location, "mode requires a do...end block")
+        return
+      end
+
+      positional, keywords = split_arguments(node)
+      unless positional.length.between?(1, 2)
+        error(node.location, "mode requires a name, an optional docstring, and keyword arguments")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid mode name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+      lisp_name = source_name.tr("_", "-")
+      if @seen_names.key?(lisp_name) || @seen_variable_names.key?(lisp_name)
+        previous_kind = @seen_names[lisp_name] || @seen_variable_names[lisp_name]
+        error(positional[0].location,
+              "duplicate mode definition `#{lisp_name}`; already defined as #{previous_kind}")
+        return
+      end
+      @seen_names[lisp_name] = "mode"
+      @seen_variable_names[lisp_name] = "mode"
+
+      docstring = nil
+      if positional[1]
+        ok, text = extract_string(positional[1])
+        return unless ok
+
+        docstring = text
+      end
+
+      keyword_pairs = []
+      keywords.each do |key, value_node|
+        unless key.match?(NAME_RE) && key != "t"
+          error(node.location, "invalid mode keyword `#{key}`; must match [a-z][a-z0-9_]*")
+          return
+        end
+        expression = parse_expression(value_node)
+        return unless expression
+
+        keyword_pairs << [key.tr("_", "-"), expression]
+      end
+
+      body = with_local_scope(node.block) do
+        with_exit_scope(:definition) { parse_buffer_statements(node.block.body&.body || []) }
+      end
+      @definitions << Forms::Mode.new(
+        source_name: source_name,
+        name: lisp_name,
+        docstring: docstring,
+        keywords: keyword_pairs,
+        body: body
+      )
+    end
+
+    # `derived_mode :child, :parent [, "mode line"] do … end` lowers to a
+    # real `(define-derived-mode …)` macro call. The parent and the child
+    # name are unevaluated symbols; the docstring is the established
+    # leading `doc` statement of the body.
+    def parse_derived_mode_definition(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `derived_mode` with explicit receiver")
+        return
+      end
+      unless node.block
+        error(node.location, "derived_mode requires a do...end block")
+        return
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "derived_mode does not accept keyword arguments")
+        return
+      end
+      unless positional.length.between?(2, 3)
+        error(node.location,
+              "derived_mode requires a child name, a parent mode symbol, and an optional mode-line string")
+        return
+      end
+
+      ok, source_name = extract_symbol(positional[0])
+      return unless ok
+
+      unless source_name.match?(NAME_RE) && source_name != "t"
+        error(positional[0].location,
+              "invalid derived mode name `#{source_name}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+      lisp_name = source_name.tr("_", "-")
+      if @seen_names.key?(lisp_name)
+        previous_kind = @seen_names.fetch(lisp_name)
+        error(positional[0].location,
+              "duplicate derived mode definition `#{lisp_name}`; already defined as #{previous_kind}")
+        return
+      end
+      @seen_names[lisp_name] = "derived_mode"
+
+      ok, parent = extract_symbol(positional[1])
+      return unless ok
+
+      unless parent.match?(NAME_RE) && !%w[t nil].include?(parent)
+        error(positional[1].location,
+              "invalid parent mode `#{parent}`; must match [a-z][a-z0-9_]*")
+        return
+      end
+
+      mode_line = nil
+      if positional[2]
+        ok, text = extract_string(positional[2])
+        return unless ok
+
+        mode_line = text
+      end
+
+      statements = node.block.body&.body || []
+      docstring = nil
+      if unqualified_call?(statements.first, :doc)
+        docstring = parse_doc_statement(statements.first)
+        statements = statements[1..]
+      end
+      body = with_local_scope(node.block) do
+        with_exit_scope(:definition) { parse_buffer_statements(statements) }
+      end
+      body = [docstring] + body if docstring
+      @definitions << Forms::DerivedMode.new(
+        source_name: source_name,
+        name: lisp_name,
+        parent: parent.tr("_", "-"),
+        mode_line: mode_line,
+        body: body
+      )
+    end
+
     # `require :name` / `provide :name` lower to (require 'name) and
     # (provide 'name). They are top-level statements only.
     def parse_feature_form(node, kind)
@@ -650,7 +825,8 @@ module Ruri
           end
         when :command
           error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :variable_local, :require, :provide
+        when :variable, :constant, :custom, :mode, :derived_mode,
+             :variable_local, :require, :provide
           error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
@@ -668,6 +844,10 @@ module Ruri
           end
         when :assign
           if (form = parse_assign_statement(stmt))
+            forms << form
+          end
+        when :assign_local
+          if (form = parse_assign_local_statement(stmt))
             forms << form
           end
         when :catch
@@ -1488,6 +1668,50 @@ module Ruri
       Forms::Assign.new(pairs: pairs)
     end
 
+    # `assign_local :name, value, ...` writes buffer-local Emacs Lisp
+    # variables with setq-local. Same shape and rules as assign.
+    def parse_assign_local_statement(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `assign_local` with explicit receiver")
+        return nil
+      end
+      if node.block
+        error(node.location, "assign_local does not take a block")
+        return nil
+      end
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "assign_local does not accept keyword arguments")
+        return nil
+      end
+      if positional.length < 2 || positional.length.odd?
+        error(node.location, "assign_local requires name/value pairs")
+        return nil
+      end
+
+      pairs = []
+      positional.each_slice(2) do |name_node, value_node|
+        unless literal_symbol_node?(name_node)
+          error(name_node.location,
+                "assign_local requires literal symbol variable names")
+          return nil
+        end
+        ok, source_name = extract_symbol(name_node)
+        return nil unless ok
+
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(name_node.location,
+                "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        value = parse_expression(value_node)
+        return nil unless value
+
+        pairs << [source_name.tr("_", "-"), value]
+      end
+      Forms::AssignLocal.new(pairs: pairs)
+    end
+
     def parse_lambda(node)
       if node.arguments
         error(node.location, "fn takes no arguments; use block parameters")
@@ -1901,7 +2125,8 @@ module Ruri
       return true unless node.is_a?(Prism::CallNode)
       return false if %i[each times].include?(node.name) && node.receiver
       return false if node.receiver.nil? &&
-                      %i[interactive command with_current_buffer insert doc assign].include?(node.name)
+                      %i[interactive command with_current_buffer insert doc assign
+                         assign_local mode derived_mode].include?(node.name)
       return false if node.receiver.nil? && node.name == :function && node.block
 
       true
@@ -1936,7 +2161,8 @@ module Ruri
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
         when :command
           error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :variable_local, :require, :provide
+        when :variable, :constant, :custom, :mode, :derived_mode,
+             :variable_local, :require, :provide
           error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
         when :function
           if stmt.block
@@ -1954,6 +2180,10 @@ module Ruri
           end
         when :assign
           if (form = parse_assign_statement(stmt))
+            forms << form
+          end
+        when :assign_local
+          if (form = parse_assign_local_statement(stmt))
             forms << form
           end
         when :catch

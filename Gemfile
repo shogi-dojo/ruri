@@ -1,5 +1,7 @@
 source "https://rubygems.org"
 
+gemspec
+
 gem "prism", "~> 1.9"
 
 group :test do
