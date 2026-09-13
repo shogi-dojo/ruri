@@ -54,10 +54,10 @@ module Ruri
       "defsubst" => "use function; Ruri cannot express defsubst inlining",
       "cl-defun" => "use function or command",
       "cl-defstruct" => "Ruri cannot express cl-defstruct records",
-      "define-minor-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it",
-      "define-globalized-minor-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it",
-      "define-derived-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it",
-      "define-generic-mode" => "Ruri cannot yet define modes; write the mode in Elisp and require it"
+      "define-minor-mode" => "use the mode form",
+      "define-globalized-minor-mode" => "Ruri cannot express globalized modes; write the mode in Elisp and require it",
+      "define-derived-mode" => "use the derived_mode form",
+      "define-generic-mode" => "Ruri cannot express generic modes; write the mode in Elisp and require it"
     }.freeze
 
     # Emacs Lisp place-taking operators routed into the typed

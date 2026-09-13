@@ -1653,6 +1653,7 @@ end')
       "let" => "the Ruri let form",
       "let_star" => "the Ruri let form",
       "setq" => "assign",
+      "setq_local" => "assign_local",
       "dolist" => "each",
       "cl_dolist" => "each",
       "dotimes" => "times",
@@ -1672,10 +1673,10 @@ end')
       "defsubst" => "defsubst inlining",
       "cl_defun" => "function or command",
       "cl_defstruct" => "cl-defstruct records",
-      "define_minor_mode" => "write the mode in Elisp",
-      "define_globalized_minor_mode" => "write the mode in Elisp",
-      "define_derived_mode" => "write the mode in Elisp",
-      "define_generic_mode" => "write the mode in Elisp"
+      "define_minor_mode" => "use the mode form",
+      "define_globalized_minor_mode" => "globalized modes",
+      "define_derived_mode" => "use the derived_mode form",
+      "define_generic_mode" => "generic modes"
     }
 
     names.each do |name, hint|

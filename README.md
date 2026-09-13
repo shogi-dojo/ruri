@@ -335,7 +335,9 @@ its original under `test/fixtures/`:
 
 - `org-fragtog.ruri` — the 254-line MELPA package, converted with the real
   `mode` construct (its one-time `define-minor-mode` emulation is gone).
-- `cmake-mode.ruri` — Kitware's 522-line `cmake-mode.el` (BSD 3-Clause),
+- `cmake-mode.ruri` — Kitware's 522-line `cmake-mode.el` (Copyright
+  2000-2024 Kitware, Inc. and Contributors, BSD 3-Clause; the license its
+  header refers to is vendored at `test/fixtures/cmake-mode-LICENSE.rst`),
   a `derived_mode` from `prog-mode` with a hand-ported indentation engine,
   font-lock keyword template, syntax table, and the full help subsystem.
   Its header documents every Ruri gap the port surfaced (rx macro forms,

@@ -1,6 +1,7 @@
 # cmake-mode written in Ruri — a conversion of Kitware's cmake-mode.el
-# (BSD 3-Clause; original preserved verbatim in
-# test/fixtures/cmake-mode-original.el).
+# (Copyright 2000-2024 Kitware, Inc. and Contributors; BSD 3-Clause).
+# The original is preserved verbatim in test/fixtures/cmake-mode-original.el,
+# and the license its header refers to in test/fixtures/cmake-mode-LICENSE.rst.
 #
 # This is a semantic conversion, not byte-identical. The known deviations
 # from source-level fidelity, each a Ruri gap recorded for the next phase:

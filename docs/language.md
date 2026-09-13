@@ -98,7 +98,8 @@ everything else is rejected with a source position.
   arguments would be emitted as evaluated calls and fail only at runtime),
   so they are rejected at compile time with a pointer to the typed form
   that covers them: `el.let`/`el.let_star` (use `let`), `el.setq`
-  (use `assign`), `el.dolist`/`el.cl_dolist` (use `.each`), `el.dotimes`
+  (use `assign`), `el.setq_local` (use `assign_local`),
+  `el.dolist`/`el.cl_dolist` (use `.each`), `el.dotimes`
   and `el.cl_dotimes` (use `.times`), `el.pcase`, `el.cl_loop`,
   `el.cl_destructuring_bind`, `el.seq_let`, `el.when_let`, and
   `el.if_let` (no Ruri equivalent; rejected outright). The same rule
@@ -106,10 +107,10 @@ everything else is rejected with a source position.
   unevaluated symbol position: `el.defun`, `el.cl_defun`, `el.defsubst`,
   and `el.defmacro`; `el.defvar`, `el.defconst`, `el.defvar_local`, and
   `el.defcustom` (use `variable`, `constant`, `variable_local`, and
-  `custom`); `el.cl_defstruct`; and the mode definitions `el.define_minor_mode`,
-  `el.define_globalized_minor_mode`, and `el.define_derived_mode`
-  (use the `mode` and `derived_mode` forms); `el.define_generic_mode`
-  remains rejected with no equivalent. Evaluated-name forms are deliberately not on
+  `custom`); `el.cl_defstruct`; and the mode definitions `el.define_minor_mode`
+  (use `mode`) and `el.define_derived_mode` (use `derived_mode`).
+  `el.define_globalized_minor_mode` and `el.define_generic_mode` remain
+  rejected with no Ruri equivalent. Evaluated-name forms are deliberately not on
   this list: `el.defalias`'s first argument is evaluated, so the quote a
   symbol literal receives is exactly correct. The place-taking
   operators `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf`
