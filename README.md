@@ -176,7 +176,21 @@ Compiling `.ruri` source requires Ruby and the compiler dependencies.
 
 ## Install / development setup
 
-From the project root:
+Install the compiler as a gem (puts `ruri` on your `PATH`, which is the
+default `ruri-compiler-executable`):
+
+```sh
+gem install ruri
+```
+
+Or from a checkout of this repository:
+
+```sh
+gem build ruri.gemspec
+gem install ruri-0.12.0.gem
+```
+
+For development from the project root:
 
 ```sh
 bundle install
