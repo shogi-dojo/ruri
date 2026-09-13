@@ -98,7 +98,17 @@ everything else is rejected with a source position.
   (use `assign`), `el.dolist`/`el.cl_dolist` (use `.each`), `el.dotimes`
   and `el.cl_dotimes` (use `.times`), `el.pcase`, `el.cl_loop`,
   `el.cl_destructuring_bind`, `el.seq_let`, `el.when_let`, and
-  `el.if_let` (no Ruri equivalent; rejected outright). The place-taking
+  `el.if_let` (no Ruri equivalent; rejected outright). The same rule
+  covers definition forms whose first argument is a name in an
+  unevaluated symbol position: `el.defun`, `el.cl_defun`, `el.defsubst`,
+  and `el.defmacro`; `el.defvar`, `el.defconst`, `el.defvar_local`, and
+  `el.defcustom` (use `variable`, `constant`, `variable_local`, and
+  `custom`); `el.cl_defstruct`; and the mode definitions `el.define_minor_mode`,
+  `el.define_globalized_minor_mode`, `el.define_derived_mode`, and
+  `el.define_generic_mode` (Ruri cannot yet define modes; write the mode
+  in Elisp and require it). Evaluated-name forms are deliberately not on
+  this list: `el.defalias`'s first argument is evaluated, so the quote a
+  symbol literal receives is exactly correct. The place-taking
   operators `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf`
   are supported as typed forms (see the construct table).
 
