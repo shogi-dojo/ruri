@@ -714,6 +714,39 @@
               (should (= 4 (line-number-at-pos)))))
         (when buffer (kill-buffer buffer))))))
 
+(ert-deftest ruri-test/compile-on-save-is-opt-in-and-works-when-enabled ()
+  (let* ((dir (make-temp-file "ruri on save " t))
+         (source (expand-file-name "autosave.ruri" dir))
+         (output (expand-file-name "autosave.el" dir)))
+    (with-temp-file source
+      (insert "command :autosave_cmd do\n"
+              "  interactive\n"
+              "  el.insert(\"v1\")\n"
+              "end\n"))
+    (with-current-buffer (find-file-noselect source)
+      (unwind-protect
+          (progn
+            ;; Off by default: saving must not compile.
+            (should-not ruri-compile-on-save-mode)
+            (should-not (memq #'ruri--compile-on-save after-save-hook))
+            (save-buffer)
+            (should-not (file-exists-p output))
+            ;; Enabling the mode compiles after each save.
+            (ruri-compile-on-save-mode)
+            (should (memq #'ruri--compile-on-save after-save-hook))
+            (goto-char (point-min))
+            (search-forward "v1")
+            (replace-match "v2")
+            (save-buffer)
+            (should (file-exists-p output))
+            (with-temp-buffer
+              (insert-file-contents output)
+              (should (string-match-p "autosave-cmd" (buffer-string)))
+              (should (string-match-p "v2" (buffer-string)))))
+        (ruri-compile-on-save-mode -1)
+        (set-buffer-modified-p nil)
+        (kill-buffer)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

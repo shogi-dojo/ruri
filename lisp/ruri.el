@@ -157,6 +157,27 @@ buffer's file with \\[ruri-compile-file], or enable
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.ruri\\'" . ruri-mode))
 
+;;;###autoload
+(define-minor-mode ruri-compile-on-save-mode
+  "Compile the current `.ruri' file after every save.
+The file is compiled with `ruri-compile-file'; a failed compilation
+shows the diagnostics in a `compilation-mode' buffer and does not
+touch the previous generated output.  The mode is off by default and
+must be enabled explicitly, per buffer, or through a hook such as
+`ruri-mode-hook'."
+  :lighter " Ruri:Compile"
+  (if ruri-compile-on-save-mode
+      (add-hook 'after-save-hook #'ruri--compile-on-save nil t)
+    (remove-hook 'after-save-hook #'ruri--compile-on-save t)))
+
+(defun ruri--compile-on-save ()
+  "After-save hook of `ruri-compile-on-save-mode'.
+Compiles the buffer's file when it is a `.ruri' file; otherwise the
+hook does nothing."
+  (when (and buffer-file-name
+             (equal (file-name-extension buffer-file-name) "ruri"))
+    (ruri-compile-file buffer-file-name)))
+
 (provide 'ruri)
 
 ;;; ruri.el ends here
