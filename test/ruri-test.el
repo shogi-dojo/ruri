@@ -683,6 +683,37 @@
                         'font-lock-builtin-face)))
         (kill-buffer)))))
 
+(ert-deftest ruri-test/failed-compilation-navigates-via-next-error ()
+  (let* ((dir (make-temp-file "ruri navigation " t))
+         (source (expand-file-name "broken.ruri" dir)))
+    (with-temp-file source
+      (insert "command :broken_cmd do\n"
+              "  interactive\n"
+              "  el.foo(\n"
+              "end\n"))
+    (should-error (ruri-compile-file source))
+    (let ((buffer (seq-find (lambda (buffer)
+                              (string-prefix-p "*Ruri compilation:"
+                                               (buffer-name buffer)))
+                            (buffer-list))))
+      (unwind-protect
+          (progn
+            (should buffer)
+            (with-current-buffer buffer
+              (should (eq major-mode 'compilation-mode))
+              (should (string-match-p
+                       (concat (regexp-quote (file-name-nondirectory source))
+                               ":[0-9]+:[0-9]+: syntax error")
+                       (buffer-string)))
+              ;; The built-in gnu rule parsed the diagnostics as errors
+              ;; and next-error visits the failing source line.
+              (goto-char (point-min))
+              (next-error 1)
+              (set-buffer (window-buffer (selected-window)))
+              (should (equal source (buffer-file-name)))
+              (should (= 4 (line-number-at-pos)))))
+        (when buffer (kill-buffer buffer))))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

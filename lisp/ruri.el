@@ -70,10 +70,34 @@ checkout's Gemfile."
   "Output path for SOURCE: `NAME.el' beside the source file."
   (concat (file-name-sans-extension source) ".el"))
 
+(defun ruri--compilation-buffer-name (source)
+  "Buffer name for the compilation output of SOURCE."
+  (concat "*Ruri compilation: "
+          (file-name-nondirectory (directory-file-name (file-name-directory source)))
+          "/" (file-name-nondirectory source) "*"))
+
+(defun ruri--report-diagnostics (source diagnostics)
+  "Show compiler DIAGNOSTICS for SOURCE in a `compilation-mode' buffer.
+The diagnostics are GNU style (`FILE:LINE:COL: MESSAGE'), so the
+built-in `gnu' error rule parses them and `next-error' jumps straight
+to the failing source line.  The buffer is also displayed so the
+failure is visible even when the error is raised."
+  (with-current-buffer (get-buffer-create (ruri--compilation-buffer-name source))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      ;; The error parser skips the first buffer line, so the buffer
+      ;; opens with a plain header instead of a diagnostic.
+      (insert "Ruri compiler diagnostics for " source ":\n"
+              diagnostics "\n")
+      (goto-char (point-min)))
+    (compilation-mode)
+    (display-buffer (current-buffer))))
+
 (defun ruri--compile (source)
   "Compile SOURCE synchronously and return the generated `.el' path.
-On a nonzero compiler exit, signal an error carrying the compiler
-diagnostics; the previous output file is left untouched."
+On a nonzero compiler exit, show the GNU-style diagnostics in a
+`compilation-mode' buffer (see `ruri--report-diagnostics') and signal
+an error; the previous output file is left untouched."
   (let* ((source (expand-file-name source))
          (output (ruri--output-path source))
          (executable (or (executable-find ruri-compiler-executable)
@@ -90,7 +114,8 @@ diagnostics; the previous output file is left untouched."
             (progn
               (message "Ruri: compiled %s -> %s" source output)
               output)
-          (error "Ruri: compiling %s failed:\n%s" source diagnostics))))))
+          (ruri--report-diagnostics source diagnostics)
+          (error "Ruri: compiling %s failed (see `next-error' for the location)" source))))))
 
 ;;;###autoload
 (defun ruri-compile-file (source)
