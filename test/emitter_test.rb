@@ -528,6 +528,41 @@ class EmitterTest < Minitest::Test
     ELISP
   end
 
+  def test_emits_mode_as_a_real_define_minor_mode_call
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      variable :count, 0
+
+      mode :demo_mode,
+           "Demo mode.",
+           init_value: nil,
+           lighter: " Dm" do
+        assign :count, var(:count) + 1
+      end
+    RURI
+
+    assert_includes output, <<~'ELISP'.chomp
+      (define-minor-mode demo-mode
+        "Demo mode."
+        :init-value nil
+        :lighter " Dm"
+        (setq count
+          (+ count 1)))
+    ELISP
+  end
+
+  def test_emits_derived_mode_with_mode_line_and_docstring
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      derived_mode :special_edit, :text_mode, "SpcEdit" do
+        doc "Edit special things."
+      end
+    RURI
+
+    assert_includes output, <<~'ELISP'.chomp
+      (define-derived-mode special-edit text-mode "SpcEdit"
+        "Edit special things.")
+    ELISP
+  end
+
   def test_emits_nested_quasiquotation
     output = Ruri.compile(<<~RURI, path: "test.ruri")
       command :nested_cmd do

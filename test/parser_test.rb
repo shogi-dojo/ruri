@@ -1818,4 +1818,72 @@ end')
     assert_match(/el\.pop takes one place/, diags[2].message)
     assert_match(/el\.cl-incf does not take a block/, diags[3].message)
   end
+
+  def test_parses_mode_definition_with_keywords_and_body
+    definitions = parse(<<~RURI)
+      variable :counter, 0
+
+      mode :fancy_mode,
+           "A fancy minor mode.",
+           init_value: nil,
+           lighter: " Fcy" do
+        assign :counter, var(:counter) + 1
+        if var(:fancy_mode)
+          el.message("on")
+        else
+          el.message("off")
+        end
+      end
+    RURI
+
+    assert_equal 2, definitions.length
+    mode = definitions[1]
+    assert_instance_of Ruri::Forms::Mode, mode
+    assert_equal "fancy_mode", mode.source_name
+    assert_equal "fancy-mode", mode.name
+    assert_equal "A fancy minor mode.", mode.docstring
+    first, second = mode.keywords
+    assert_equal "init-value", first[0]
+    assert_instance_of Ruri::Forms::Literal, first[1]
+    assert_equal "lighter", second[0]
+    assert_equal 2, mode.body.length
+  end
+
+  def test_rejects_mode_definitions_with_bad_names_and_shapes
+    diags = diagnostics_of(<<~RURI)
+      mode "not_a_symbol", "Doc." do
+      end
+
+      function :existing do
+      end
+
+      mode :existing, "Doc." do
+      end
+
+      mode :variable_clash, "Doc." do
+      end
+    RURI
+
+    assert_match(/literal symbol argument required/, diags[0].message)
+    assert_match(/duplicate mode definition `existing`; already defined as function/, diags[1].message)
+  end
+
+  def test_rejects_mode_without_block
+    diag = single_diagnostic(<<~RURI)
+      mode :noblock, "Doc."
+    RURI
+
+    assert_match(/mode requires a do\.\.\.end block/, diag.message)
+  end
+
+  def test_rejects_mode_nested_in_a_function_body
+    diag = single_diagnostic(<<~RURI)
+      function :nested do
+        mode :inner, "Doc." do
+        end
+      end
+    RURI
+
+    assert_match(/mode is only allowed at the top level of a \.ruri file/, diag.message)
+  end
 end

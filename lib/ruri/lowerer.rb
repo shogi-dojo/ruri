@@ -45,6 +45,8 @@ module Ruri
         when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
         when Forms::VariableLocalDefinition then lower_variable_definition(definition, "defvar-local")
         when Forms::CustomDefinition then lower_custom_definition(definition)
+        when Forms::Mode then lower_mode(definition)
+        when Forms::DerivedMode then lower_derived_mode(definition)
         when Forms::Require then lower_feature(definition, "require")
         when Forms::Provide then lower_feature(definition, "provide")
         else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
@@ -239,6 +241,49 @@ module Ruri
         )
       end
       Elisp.list(*items)
+    end
+
+    # Minor and derived modes emit the real macro call and let Emacs
+    # expand it: the macro generates the state variable, the hook, the
+    # add-minor-mode registration, and the interactive toggle, none of
+    # which Ruri should replicate. The mode body lowers like a function
+    # body (locals in a lexical let, return caught when used).
+    def lower_mode(mode)
+      return_tag = enter_return_scope(mode.body)
+      lowered = mode.body.map { |statement| lower_statement(statement) }
+      leave_return_scope(return_tag)
+      locals = collect_locals(mode.body)
+      lowered = wrap_locals(locals, lowered) unless locals.empty?
+      lowered = [catch_wrap(return_tag, lowered)] if return_tag
+
+      items = [Elisp.symbol("define-minor-mode"), Elisp.symbol(mode.name)]
+      items << lower_docstring_text(mode.docstring) if mode.docstring
+      mode.keywords.each do |key, expression|
+        items << Elisp.inline_sequence(
+          Elisp.symbol(":#{key}"),
+          lower_expression(expression)
+        )
+      end
+      Elisp.list(*items, *lowered)
+    end
+
+    def lower_derived_mode(definition)
+      doc_form, statements = partition_docstring(definition.body)
+      return_tag = enter_return_scope(definition.body)
+      lowered = statements.map { |statement| lower_statement(statement) }
+      leave_return_scope(return_tag)
+      locals = collect_locals(statements)
+      lowered = wrap_locals(locals, lowered) unless locals.empty?
+      lowered = [catch_wrap(return_tag, lowered)] if return_tag
+
+      items = [
+        Elisp.symbol("define-derived-mode"),
+        Elisp.symbol(definition.name),
+        Elisp.symbol(definition.parent)
+      ]
+      items << Elisp.string(definition.mode_line) if definition.mode_line
+      items.push(*doc_form)
+      Elisp.list(*items, *lowered)
     end
 
     def lower_feature(definition, lisp_form)

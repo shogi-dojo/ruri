@@ -515,6 +515,68 @@ class LowererTest < Minitest::Test
     assert_equal "hook-var", pop_form.items[1].name
   end
 
+  def test_lowers_mode_to_a_real_define_minor_mode_call
+    definitions = parse(<<~RURI)
+      variable :count, 0
+
+      mode :demo_mode,
+           "Demo mode.",
+           init_value: nil,
+           lighter: " Dm" do
+        assign :count, var(:count) + 1
+      end
+    RURI
+
+    mode_form = Ruri::Lowerer.lower(definitions)[1]
+    assert_equal "define-minor-mode", mode_form.items[0].name
+    assert_equal "demo-mode", mode_form.items[1].name
+    assert_equal Ruri::Elisp.docstring(Ruri::Elisp.string("Demo mode.")), mode_form.items[2]
+    # (value assertion above reads the String node via .value)
+    init_keyword, lighter_keyword = mode_form.items[3], mode_form.items[4]
+    assert_equal ":init-value", init_keyword.items[0].name
+    assert_equal "nil", init_keyword.items[1].name
+    assert_equal ":lighter", lighter_keyword.items[0].name
+    assert_equal " Dm", lighter_keyword.items[1].value
+    assert_equal "setq", mode_form.items[5].items[0].name
+  end
+
+  def test_lowers_derived_mode_with_mode_line_and_docstring
+    definitions = parse(<<~RURI)
+      derived_mode :special_edit, :text_mode, "SpcEdit" do
+        doc "Edit special things."
+        el.message("hi")
+      end
+    RURI
+
+    derived = Ruri::Lowerer.lower(definitions).first
+    assert_equal "define-derived-mode", derived.items[0].name
+    assert_equal "special-edit", derived.items[1].name
+    assert_equal "text-mode", derived.items[2].name
+    assert_equal "SpcEdit", derived.items[3].value
+    assert_equal Ruri::Elisp.docstring(Ruri::Elisp.string("Edit special things.")), derived.items[4]
+    assert_equal "message", derived.items[5].items[0].name
+  end
+
+  def test_mode_body_locals_declare_in_a_let_and_return_is_caught
+    definitions = parse(<<~RURI)
+      mode :local_mode, "Locals." do
+        marker = 1
+        if marker == 1
+          return :early
+        end
+        el.message("%S", marker)
+      end
+    RURI
+
+    mode_form = Ruri::Lowerer.lower(definitions).first
+    # After the keyword list, the body is (catch 'ruri--return-1 (let ...)).
+    catch_form = mode_form.items[3]
+    assert_equal "catch", catch_form.items[0].name
+    inner_let = catch_form.items[2]
+    assert_equal "let", inner_let.items[0].name
+    assert_equal ["ruri--local-marker"], inner_let.items[1].items.map(&:name)
+  end
+
   def test_lowers_nested_quasiquotation_with_depth_escapes
     command = parse(<<~RURI).first
       command :nested_cmd do

@@ -814,6 +814,52 @@ while `variable_local' next to it was fenced, so check the whole set."
     (should-error (ruri--byte-compile output))
     (should (file-exists-p output))))
 
+(ert-deftest ruri-test/mode-forms-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri modes " t))
+         (source (expand-file-name "modes.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_test_body_count, 0\n"
+              "\n"
+              "mode :ruri_test_fancy_mode,\n"
+              "     \"A fancy minor mode.\",\n"
+              "     init_value: nil,\n"
+              "     lighter: \" Fcy\" do\n"
+              "  assign :ruri_test_body_count, var(:ruri_test_body_count) + 1\n"
+              "end\n"
+              "\n"
+              "derived_mode :ruri_test_special, :text_mode, \"RuriT\" do\n"
+              "  doc \"A derived mode for testing.\"\n"
+              "end\n"
+              "\n"
+              "provide :ruri_test_modes\n"))
+    (ruri-load-file source)
+    ;; define-minor-mode generated the function, the state variable, and
+    ;; the hook variable; the body runs on every toggle.
+    (should (fboundp 'ruri-test-fancy-mode))
+    (should (boundp 'ruri-test-fancy-mode))
+    (should (boundp 'ruri-test-fancy-mode-hook))
+    (should (= 0 ruri-test-body-count))
+    ;; From Lisp a no-argument call enables the mode; toggling is the
+    ;; interactive-only convention, so drive it with explicit arguments.
+    (with-temp-buffer
+      (ruri-test-fancy-mode 4)
+      (should (eq t ruri-test-fancy-mode))
+      (should (= 1 ruri-test-body-count))
+      (ruri-test-fancy-mode -1)
+      (should (null ruri-test-fancy-mode))
+      (should (= 2 ruri-test-body-count)))
+    ;; The :lighter keyword lands in minor-mode-alist as the entry's
+    ;; second element.
+    (with-temp-buffer
+      (ruri-test-fancy-mode 4)
+      (should (equal " Fcy"
+                     (cadr (assq 'ruri-test-fancy-mode minor-mode-alist)))))
+    ;; define-derived-mode reports its parent.
+    (with-temp-buffer
+      (ruri-test-special)
+      (should (derived-mode-p 'text-mode))
+      (should (equal "RuriT" mode-name)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))

@@ -42,6 +42,18 @@ module Ruri
     # Top-level buffer-local variable definition (defvar-local).
     VariableLocalDefinition = Data.define(:source_name, :name, :value, :docstring)
 
+    # Top-level minor-mode definition: `mode :name [, "doc"] [, key: expr …] do … end`.
+    # Emits `(define-minor-mode name ["doc"] [:key expr …] body…)`, letting
+    # Emacs expand the macro. +keywords+ are [lisp_keyword_name, expression]
+    # pairs in source order (the `custom` keyword machinery).
+    Mode = Data.define(:source_name, :name, :docstring, :keywords, :body)
+
+    # Top-level derived-mode definition:
+    # `derived_mode :child, :parent [, "mode line"] do … end`. Emits
+    # `(define-derived-mode child parent ["mode line"] ["doc"] body…)`;
+    # the docstring comes from a leading `doc` statement.
+    DerivedMode = Data.define(:source_name, :name, :parent, :mode_line, :body)
+
     # Statement form assigning to Emacs Lisp variables (setq). Pairs are
     # [name, value_expression] in source order.
     Assign = Data.define(:pairs)
