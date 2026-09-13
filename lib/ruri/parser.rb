@@ -18,41 +18,82 @@ module Ruri
     }.freeze
     UNARY_OPERATORS = { :! => "not", :-@ => "-", :+@ => "identity" }.freeze
 
-    # Emacs Lisp forms that take bindings, patterns, or variable names in
-    # unevaluated positions. Through the generic el.* call path their
-    # arguments are emitted as evaluated calls and the generated Elisp
-    # fails only at runtime, so each name is rejected at compile time
-    # with a pointer to the Ruri construct that covers it.
+    # Emacs Lisp forms whose arguments live in unevaluated positions. Through
+    # the generic el.* call path their arguments are emitted as evaluated
+    # calls and the generated Elisp fails (or silently miscompiles) only at
+    # runtime, so each name is rejected at compile time with a pointer to
+    # the Ruri construct that covers it.
     #
-    # Admission rule: the form's first argument is a name or symbol in an
-    # unevaluated position, so the quote a symbol literal gets under the
-    # generic call path (el.foo(:bar) -> (foo 'bar)) breaks or silently
-    # miscompiles it. Every entry was verified in batch Emacs with the
-    # quoted name before admission; evaluated-name forms such as
-    # el.defalias (whose quoted symbol is correct) stay off the table.
+    # Admission rule — a form lands here when either shape holds:
+    #
+    #   1. A name or symbol sits in an unevaluated position (setq, defun,
+    #      define-minor-mode, ...), so the quote a symbol literal gets under
+    #      the generic call path (el.foo(:bar) -> (foo 'bar)) breaks it.
+    #   2. A binding list, clause list, pattern, arglist, or entire body is
+    #      unevaluated (let, cond, rx, ...), so no argument the generic path
+    #      can produce is right. There may be no offending first argument at
+    #      all, as with rx and syntax-propertize-rules, whose whole body is
+    #      unevaluated.
+    #
+    # The falsifiable test for any candidate: compile it, load it in batch
+    # Emacs, and see whether the quoting the generic path applies breaks it.
+    # A candidate that merely does not exist in Emacs (do, tagbody) fails
+    # with void-function regardless of quoting and is not a member of this
+    # class. Every entry above was verified that way before admission.
+    # Evaluated-argument forms pass the test and stay off the table — when,
+    # unless, with-eval-after-load, add-to-list, and rx-to-string all run
+    # correctly through the generic path, and defalias's name argument is
+    # evaluated, so the quote its symbol literal receives is exactly right.
+    # Place-taking operators (setf, push, pop, cl-incf, cl-decf) are routed
+    # to typed forms in PLACE_OPERATORS instead of this table.
     UNEVALUATED_POSITION_CALLS = {
       "let" => "use the Ruri let form",
       "let-star" => "use the Ruri let form; it binds sequentially",
+      "dlet" => "Ruri cannot destructure; bind with let and read with el.car and el.nth",
+      "letrec" => "use let with fn; the body sees the binding, so recursion works",
+      "named-let" => "rewrite the loop as a top-level function, or use .times/.each",
       "setq" => "use assign(:name, value)",
       "setq-local" => "use assign_local(:name, value)",
+      "setq-default" => "use el.set_default(:name, value)",
+      "lambda" => "use fn",
       "dolist" => "use collection.each do |item| ... end",
       "cl-dolist" => "use collection.each do |item| ... end",
       "dotimes" => "use count.times do |i| ... end",
       "cl-dotimes" => "use count.times do |i| ... end",
-      "pcase" => "Ruri cannot express pcase patterns; use conditionals",
-      "cl-loop" => "Ruri cannot express cl-loop clauses; use while, each, or let",
-      "cl-destructuring-bind" => "Ruri cannot express destructuring patterns",
-      "seq-let" => "Ruri cannot express destructuring patterns",
+      "dotimes-with-progress-reporter" => "use count.times do |i| ... end",
+      "dolist-with-progress-reporter" => "use collection.each do |item| ... end",
+      "seq-doseq" => "use collection.each do |item| ... end",
+      "while-let" => "bind with the Ruri let form and loop with while",
       "when-let" => "bind with the Ruri let form and branch with if",
       "if-let" => "bind with the Ruri let form and branch with if",
+      "cond" => "use if/elsif; Ruri has no cond construct",
+      "cl-case" => "use if/elsif",
+      "cl-typecase" => "use if/elsif with type predicates",
+      "pcase" => "Ruri cannot express pcase patterns; use conditionals",
+      "pcase-let" => "Ruri cannot express pcase patterns; bind with let",
+      "pcase-setq" => "Ruri cannot express pcase patterns; bind with let",
+      "pcase-dolist" => "use collection.each; Ruri cannot express pcase patterns",
+      "cl-loop" => "Ruri cannot express cl-loop clauses; use while, each, or let",
+      "cl-do" => "use .times, .each, or while",
+      "cl-destructuring-bind" => "Ruri cannot express destructuring patterns",
+      "seq-let" => "Ruri cannot express destructuring patterns",
+      "condition-case" => "use begin/rescue",
+      "cl-flet" => "use let with fn",
+      "cl-labels" => "use let with fn",
+      "cl-letf" => "Ruri cannot dynamically rebind; pass the behavior in as a parameter",
       "defun" => "use function or command",
       "defconst" => "use constant",
       "defvar" => "use variable or variable_local",
       "defvar-local" => "use variable_local",
       "defcustom" => "use custom",
+      "defface" => "Ruri cannot define faces; write the defface in Elisp and require it",
+      "defgroup" => "Ruri cannot define custom groups; write the defgroup in Elisp and require it",
       "defmacro" => "Ruri cannot define macros; write the macro in Elisp and require it",
+      "cl-defmacro" => "Ruri cannot define macros; write the macro in Elisp and require it",
       "defsubst" => "use function; Ruri cannot express defsubst inlining",
       "cl-defun" => "use function or command",
+      "cl-defmethod" => "Ruri cannot define methods; write it in Elisp and require it",
+      "cl-defgeneric" => "Ruri cannot define generic functions; write it in Elisp and require it",
       "cl-defstruct" => "Ruri cannot express cl-defstruct records",
       "define-minor-mode" => "use the mode form",
       "define-globalized-minor-mode" => "Ruri cannot express globalized modes; write the mode in Elisp and require it",
@@ -1389,7 +1430,7 @@ module Ruri
       normalized_name = normalize_elisp_name(source_name)
       if (guidance = UNEVALUATED_POSITION_CALLS[normalized_name])
         error(node.message_loc || node.location,
-              "el.#{normalized_name} takes bindings or names in unevaluated " \
+              "el.#{normalized_name} takes arguments in unevaluated " \
               "positions and would only fail at runtime; #{guidance}")
         return nil
       end
