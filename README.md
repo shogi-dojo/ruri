@@ -342,8 +342,8 @@ its original under `test/fixtures/`:
   a `derived_mode` from `prog-mode` with a hand-ported indentation engine,
   font-lock keyword template, syntax table, and the full help subsystem.
   Its header documents every Ruri gap the port surfaced (rx macro forms,
-  character literals, conditional expressions in argument position, dynamic
-  let-bindings, top-level executable forms, and `syntax-propertize-rules`)
+  character literals, dynamic let-bindings, top-level executable forms, and
+  `syntax-propertize-rules`)
   together with the workarounds used, so the gap list is traceable
   construct by construct.
 - `julia-mode.ruri` — the 1028-line official Julia mode
