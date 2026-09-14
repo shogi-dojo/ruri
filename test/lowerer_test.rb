@@ -98,6 +98,32 @@ class LowererTest < Minitest::Test
     assert_equal "ruri--local-value", negated.items[1].items[1].name
   end
 
+  def test_lowers_conditionals_in_argument_position_as_expressions
+    command = parse(<<~RURI).first
+      command :choose do
+        interactive
+        el.message("%s", if el.buffer_modified_p
+          el.message("saving")
+          "changed"
+        else
+          "clean"
+        end)
+      end
+    RURI
+
+    defun = Ruri::Lowerer.lower([command]).first
+    message = defun.items.last
+    assert_equal "message", message.items.first.name
+    conditional = message.items[2]
+    assert_equal "if", conditional.items.first.name
+    assert_equal "buffer-modified-p", conditional.items[1].items.first.name
+    progn = conditional.items[2]
+    assert_equal "progn", progn.items.first.name
+    assert_equal "message", progn.items[1].items.first.name
+    assert_equal "changed", progn.items[2].value
+    assert_equal "clean", conditional.items[3].value
+  end
+
   def test_lowers_generic_block_forms_and_collects_nested_locals
     command = parse(<<~RURI).first
       command :preserve_point do

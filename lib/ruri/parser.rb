@@ -1552,6 +1552,12 @@ module Ruri
                        "parentheses must contain exactly one expression")
         end
         parse_expression(expressions.first)
+      when Prism::IfNode, Prism::UnlessNode
+        parse_conditional(
+          node,
+          negated: node.is_a?(Prism::UnlessNode),
+          value_branches: true
+        )
       when Prism::BeginNode
         parse_begin_node(node)
       when Prism::CallNode

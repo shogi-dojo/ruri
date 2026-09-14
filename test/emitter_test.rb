@@ -604,4 +604,32 @@ class EmitterTest < Minitest::Test
         `(b ,flag))))
     ELISP
   end
+
+  def test_emits_conditionals_in_value_position
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      function :probe do |flag, other|
+        el.message("%s", if flag then "a" elsif other then "b" else "c" end)
+        picked = if flag then 1 else 2 end
+        let do |v = if flag then "yes" else "no" end|
+          el.message("%s", v)
+        end
+        el.message("%s", flag ? "on" : "off")
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+    (message "%s"
+      (if ruri--local-flag "a"
+        (if ruri--local-other "b" "c")))
+    (setq ruri--local-picked
+      (if ruri--local-flag 1 2))
+    (let*
+      (
+        (ruri--local-v
+          (if ruri--local-flag "yes" "no")))
+      (message "%s" ruri--local-v))
+    (message "%s"
+      (if ruri--local-flag "on" "off"))
+    ELISP
+  end
 end

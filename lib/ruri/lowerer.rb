@@ -570,6 +570,8 @@ module Ruri
           *expression.arguments.map { |argument| lower_expression(argument) }
         )
         expression.negated ? Elisp.list(Elisp.symbol("not"), operation) : operation
+      when Forms::Conditional
+        lower_conditional(expression)
       when Forms::Rescue
         lower_rescue(expression)
       when Forms::Ensure
