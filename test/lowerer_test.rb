@@ -652,6 +652,58 @@ class LowererTest < Minitest::Test
     assert_equal 5, throw_form.items[2].value
   end
 
+  def test_return_inside_an_argument_conditional_wraps_the_defun_in_a_catch
+    function = parse(<<~RURI).first
+      function :early do |flag|
+        el.message("%s", if flag then return "early" else "late" end)
+        "end"
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    return_catch = lowered.items[3]
+    assert_equal "catch", return_catch.items.first.name
+    assert_equal "ruri--return-1", return_catch.items[1].value.name
+    message = return_catch.items[2]
+    conditional = message.items[2]
+    throw_form = conditional.items[2]
+    assert_equal "throw", throw_form.items.first.name
+    assert_equal "ruri--return-1", throw_form.items[1].value.name
+    assert_equal "end", return_catch.items[3].value
+  end
+
+  def test_exit_scan_stops_at_fn_boundaries_in_argument_position
+    function = parse(<<~RURI).first
+      function :outer do
+        el.funcall(fn do return 1 end)
+        2
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    assert_equal "funcall", lowered.items[3].items.first.name
+    lambda_form = lowered.items[3].items[1]
+    assert_equal "lambda", lambda_form.items.first.name
+    assert_equal "catch", lambda_form.items[2].items.first.name
+  end
+
+  def test_break_inside_an_argument_conditional_wraps_the_loop_in_a_catch
+    function = parse(<<~RURI).first
+      function :loopy do |xs, flag|
+        xs.each do |x|
+          el.message("%s", if flag then break x else x end)
+        end
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    break_catch = lowered.items[3]
+    assert_equal "catch", break_catch.items.first.name
+    assert_equal "ruri--break-1", break_catch.items[1].value.name
+    mapc = break_catch.items[2]
+    assert_equal "mapc", mapc.items.first.name
+  end
+
   def test_loops_without_exits_emit_no_catch
     function = parse(<<~RURI).first
       function :plain do

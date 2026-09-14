@@ -196,6 +196,19 @@
     (should (equal "direct" (pick-initializer t "fb")))
     (should (equal "fb" (pick-initializer nil "fb")))))
 
+(ert-deftest ruri-test/return-in-value-position-lands-its-catch-tag ()
+  (let* ((dir (make-temp-file "ruri return-value " t))
+         (source (expand-file-name "return-value.ruri" dir)))
+    (with-temp-file source
+      (insert "function :early do |flag|\n"
+              "  el.message(\"flag is %s\", flag)\n"
+              "  el.concat(\"kept \",\n"
+              "            (if flag then return \"early\" else \"late\" end))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (equal "early" (early t)))
+    (should (equal "kept late" (early nil)))))
+
 (ert-deftest ruri-test/generic-block-forms-run-in-emacs ()
   (let* ((dir (make-temp-file "ruri block forms " t))
          (source (expand-file-name "blocks.ruri" dir)))
