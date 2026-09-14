@@ -26,28 +26,23 @@
 # 6. cond / when-let / if-let / cl-flet / cl-loop are rejected: rewritten
 #    as if/elsif chains, let + fn, and while loops. The two cl-flet
 #    accumulators are small enough to inline.
-# 7. Conditionals cannot appear in argument, initializer, or
-#    assignment-value position, so every `(if …)` used as a value is
-#    computed into a local first (julia_paren_indent,
-#    julia__beginning_of_defun, julia_mode__latexsub_before_point,
-#    julia_indent_line).
-# 8. A let binding cannot shadow a dynamic variable (locals are hygienic),
+# 7. A let binding cannot shadow a dynamic variable (locals are hygienic),
 #    so julia_fill_paragraph's `(let ((fill-paragraph-function nil)) …)`
 #    becomes an explicit save/restore wrapped in begin/ensure.
-# 9. The AUCTeX-gated block `(when (featurep 'latex) …)` is omitted:
+# 8. The AUCTeX-gated block `(when (featurep 'latex) …)` is omitted:
 #    Ruri definitions are unconditional top-level forms, so julia-math-mode
 #    and julia-math-insert have no expressible gate.
-# 10. derived_mode keyword arguments are not expressible: the original's
-#     :abbrev-table keyword becomes an `assign_local :local_abbrev_table`
-#     in the body, and :group is dropped (customize UI only).
-# 11. All 16 rx forms are pre-expanded to literal regexp strings with batch
+# 9. derived_mode keyword arguments are not expressible: the original's
+#    :abbrev-table keyword becomes an `assign_local :local_abbrev_table`
+#    in the body, and :group is dropped (customize UI only).
+# 10. All 16 rx forms are pre-expanded to literal regexp strings with batch
 #     Emacs, exactly as cmake-mode.ruri does.
-# 12. The `;;;###autoload` cookie and its top-level add-to-list registration
+# 11. The `;;;###autoload` cookie and its top-level add-to-list registration
 #     are omitted (top-level expression statements are not expressible);
 #     users add .jl to auto-mode-alist, exactly as cmake-mode.ruri does.
-# 13. defsubst is rejected (no inlining semantics);
+# 12. defsubst is rejected (no inlining semantics);
 #     julia_syntax_comment_or_string_p is a plain function.
-# 14. delete-backward-char is reserved for interactive use by the byte
+# 13. delete-backward-char is reserved for interactive use by the byte
 #     compiler, so its single use is expressed as el.delete_char with a
 #     negated count (same region deleted).
 
@@ -233,7 +228,7 @@ constant :julia_mode_syntax_table, el.julia__make_syntax_table,
 
 # Regexp constants. The original builds these with the rx macro; Ruri
 # cannot express rx, so each form was pre-expanded with batch Emacs
-# (deviation 11).
+# (deviation 10).
 
 # (rx (or (any "-" ";" "\\" "^" "!" "|" "?" "*" "<" "%" "," "=" ">" "+"
 #          "/" "&" "$" "~" ":") (syntax open-parenthesis) (syntax whitespace) bol)
@@ -578,13 +573,7 @@ function :julia_paren_indent do
           el.goto_char(open_paren_point)
           el.beginning_of_line
           el.skip_syntax_forward(" ")
-          # (if paren-closed 0 julia-indent-offset) computed into a local:
-          # conditionals cannot appear in argument position (deviation 7).
-          delta = 0
-          if !paren_closed
-            delta = var(:julia_indent_offset)
-          end
-          answer = el.current_column + delta
+          answer = el.current_column + (if paren_closed then 0 else var(:julia_indent_offset) end)
         else
           answer = el.current_column
         end
@@ -678,10 +667,11 @@ command :julia_indent_line do
       el.forward_to_indentation(0)
       endtok = el.julia_at_keyword(var(:julia_block_end_keywords))
       last_open_block = el.julia_last_open_block(el.point - var(:julia_max_block_lookback))
-      subtract = 0
-      if endtok || el.julia_at_keyword(var(:julia_block_start_keywords_no_indent))
-        # subtract indentation if we're at the end of a block
-        subtract = var(:julia_indent_offset)
+      # subtract indentation if we're at the end of a block
+      subtract = if endtok || el.julia_at_keyword(var(:julia_block_start_keywords_no_indent))
+        var(:julia_indent_offset)
+      else
+        0
       end
       el.max(paren_indent, (last_open_block || paren_indent) - subtract)
     end
@@ -700,7 +690,7 @@ command :julia_fill_paragraph do |justify, region|
   # The original let-binds fill-paragraph-function dynamically to nil so
   # recursive fill-paragraph calls use the default filler. Ruri locals are
   # hygienic and cannot shadow a dynamic variable, so save and restore it
-  # around an ensure (deviation 8).
+  # around an ensure (deviation 7).
   saved_fpf = var(:fill_paragraph_function)
   assign :fill_paragraph_function, nil
   begin
@@ -770,13 +760,8 @@ end
 
 function :julia__beginning_of_defun do |arg = nil|
   doc "Internal implementation of `julia-beginning-of-defun'.\nWith positive ARG search backwards, else search forwards."
-  if !arg || arg == 0
-    arg = 1
-  end
-  re_search_fn = function(:re_search_backward)
-  if !(arg > 0)
-    re_search_fn = function(:re_search_forward)
-  end
+  arg = 1 if !arg || arg == 0
+  re_search_fn = if arg > 0 then function(:re_search_backward) else function(:re_search_forward) end
   line_beg_pos = el.line_beginning_position
   line_content_start = line_beg_pos + el.current_indentation
   pos = el.point_marker
@@ -916,7 +901,7 @@ constant :julia_imenu_generic_expression,
 
 # Mode definition. The original's :abbrev-table keyword is expressed as an
 # assign_local of local-abbrev-table in the body; :group is dropped
-# (deviation 10).
+# (deviation 9).
 derived_mode :julia_mode, :prog_mode, "Julia" do
   doc "Major mode for editing julia code."
   el.julia__declare_faces()
@@ -1044,16 +1029,15 @@ function :julia_mode__latexsub_before_point do
     replacements = el.gethash(partial, var(:julia_mode__latexsubs_partials))
     if replacements
       complete_match = el.member(partial, replacements)
-      latex = nil
-      if complete_match && var(:julia_latexsub_greedy)
+      latex = if complete_match && var(:julia_latexsub_greedy)
         # complete match w/ greedy
-        latex = partial
+        partial
       elsif el.cdr(replacements)
         # multiple replacements, ask user
-        latex = el.funcall(var(:julia_latexsub_selector), replacements)
+        el.funcall(var(:julia_latexsub_selector), replacements)
       else
         # single replacement, pick that
-        latex = el.car(replacements)
+        el.car(replacements)
       end
       result = el.cons(beg_pos, latex)
     end
@@ -1078,6 +1062,6 @@ end
 
 # Math insertion in julia. The original gates julia-math-mode on
 # (featurep 'latex) — AUCTeX — at load time; Ruri definitions are
-# unconditional top-level forms, so that block is omitted (deviation 9).
+# unconditional top-level forms, so that block is omitted (deviation 8).
 
 provide :julia_mode
