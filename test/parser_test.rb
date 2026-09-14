@@ -152,6 +152,27 @@ class ParserTest < Minitest::Test
                  parameters.names
   end
 
+  def test_parses_discard_parameters_with_underscore_names
+    # A leading underscore marks a deliberately unused binding; the
+    # generated name keeps the underscore so the byte compiler suppresses
+    # its unused-argument warning (this keeps the julia-mode port's
+    # callback lambdas warning-free).
+    function = parse(<<~RURI).first
+      function :probe do |x, _unused|
+        el.maphash(fn do |key, _value|
+          el.ignore(key, _value)
+        end, x)
+      end
+    RURI
+
+    assert_equal ["ruri--local-x", "_unused"], function.parameters.required
+    lambda_form = function.body.first.arguments[0]
+    assert_equal ["ruri--local-key", "_value"], lambda_form.parameters.required
+    # A discard name is still readable and resolves to its own symbol.
+    read = lambda_form.body.first.arguments[1]
+    assert_equal "_value", read.name
+  end
+
   def test_parses_optional_default_referencing_a_parameter
     function = parse(<<~RURI).first
       function :scale do |width, fallback = width|
@@ -1637,46 +1658,73 @@ end')
       end
     RURI
 
-    assert_match(/el\.let takes bindings or names in unevaluated.*use the Ruri let form/,
+    assert_match(/el\.let takes arguments in unevaluated.*use the Ruri let form/,
                  diags[0].message)
-    assert_match(/el\.setq takes bindings or names in unevaluated.*use assign\(:name, value\)/,
+    assert_match(/el\.setq takes arguments in unevaluated.*use assign\(:name, value\)/,
                  diags[1].message)
-    assert_match(/el\.pcase takes bindings or names in unevaluated.*use conditionals/,
+    assert_match(/el\.pcase takes arguments in unevaluated.*use conditionals/,
                  diags[2].message)
   end
 
   def test_rejects_every_documented_unevaluated_position_call
     # The contract (docs/language.md) promises each of these is rejected at
     # compile time. Sampling a few names previously let el.dotimes ship
-    # unrejected, so assert the whole table.
+    # unrejected, and el.setq_local entered the table without a guard line
+    # in Phase 7, so assert the whole table and that nothing else entered it.
     names = {
       "let" => "the Ruri let form",
       "let_star" => "the Ruri let form",
+      "dlet" => "cannot destructure",
+      "letrec" => "use let with fn",
+      "named_let" => "top-level function",
       "setq" => "assign",
       "setq_local" => "assign_local",
+      "setq_default" => "el.set_default",
+      "lambda" => "use fn",
       "dolist" => "each",
       "cl_dolist" => "each",
       "dotimes" => "times",
       "cl_dotimes" => "times",
-      "pcase" => "conditionals",
-      "cl_loop" => "while, each, or let",
-      "cl_destructuring_bind" => "destructuring",
-      "seq_let" => "destructuring",
+      "dotimes_with_progress_reporter" => "count.times",
+      "dolist_with_progress_reporter" => "collection.each",
+      "seq_doseq" => "collection.each",
+      "while_let" => "loop with while",
       "when_let" => "if",
       "if_let" => "if",
+      "cond" => "if/elsif",
+      "cl_case" => "if/elsif",
+      "cl_typecase" => "type predicates",
+      "pcase" => "conditionals",
+      "pcase_let" => "pcase patterns",
+      "pcase_setq" => "pcase patterns",
+      "pcase_dolist" => "pcase patterns",
+      "cl_loop" => "while, each, or let",
+      "cl_do" => "while",
+      "cl_destructuring_bind" => "destructuring",
+      "seq_let" => "destructuring",
+      "condition_case" => "begin/rescue",
+      "cl_flet" => "let with fn",
+      "cl_labels" => "let with fn",
+      "cl_letf" => "dynamically rebind",
       "defun" => "function or command",
       "defconst" => "constant",
       "defvar" => "variable or variable_local",
       "defvar_local" => "variable_local",
       "defcustom" => "custom",
+      "defface" => "define faces",
+      "defgroup" => "custom groups",
       "defmacro" => "Ruri cannot define macros",
+      "cl_defmacro" => "Ruri cannot define macros",
       "defsubst" => "defsubst inlining",
       "cl_defun" => "function or command",
+      "cl_defmethod" => "define methods",
+      "cl_defgeneric" => "generic functions",
       "cl_defstruct" => "cl-defstruct records",
       "define_minor_mode" => "use the mode form",
       "define_globalized_minor_mode" => "globalized modes",
       "define_derived_mode" => "use the derived_mode form",
       "define_generic_mode" => "generic modes",
+      "define_abbrev_table" => "el.make_abbrev_table",
       "rx" => "rx forms",
       "syntax_propertize_rules" => "syntax-propertize rules"
     }
@@ -1689,9 +1737,16 @@ end')
       RURI
 
       assert_equal 1, diags.size, "el.#{name} must be rejected"
-      assert_match(/takes bindings or names in unevaluated positions/, diags.first.message)
+      assert_match(/takes arguments in unevaluated positions/, diags.first.message)
       assert_includes diags.first.message, hint
     end
+
+    # The rejection table and this guard must stay in exact sync, in both
+    # directions: an entry added to the table without a line here, or a
+    # guard line for a name no longer in the table, is a documentation bug.
+    assert_equal names.keys.sort,
+                 Ruri::Parser::UNEVALUATED_POSITION_CALLS.keys.map { |key| key.tr("-", "_") }.sort,
+                 "the rejection table and this guard list have drifted apart"
   end
 
   def test_parses_assign_local_pairs
@@ -1734,6 +1789,27 @@ end')
     assert_equal "defalias", call.name
   end
 
+  def test_evaluated_argument_calls_stay_off_the_rejection_table
+    # when, unless, with-eval-after-load, add-to-list, and rx-to-string
+    # evaluate every argument, so the generic path handles them correctly.
+    # They were verified in batch Emacs and must not be swept onto the
+    # unevaluated-position rejection table.
+    definitions = parse(<<~RURI)
+      function :probing do |flag|
+        el.when(flag, 1)
+        el.unless(flag, 2)
+        el.with_eval_after_load("some-feature") do
+          el.identity(3)
+        end
+        el.add_to_list(:some_list, 4)
+        el.rx_to_string(quasiquote(list(:seq, "a", "b")))
+      end
+    RURI
+
+    names = definitions.first.body.map(&:name)
+    assert_equal(%w[when unless with-eval-after-load add-to-list rx-to-string], names)
+  end
+
   def test_rejects_unevaluated_position_calls_at_any_arity
     diags = diagnostics_of(<<~RURI)
       function :bare do
@@ -1745,8 +1821,8 @@ end')
       end
     RURI
 
-    assert_match(/el\.cl-loop takes bindings or names in unevaluated/, diags[0].message)
-    assert_match(/el\.when-let takes bindings or names in unevaluated/, diags[1].message)
+    assert_match(/el\.cl-loop takes arguments in unevaluated/, diags[0].message)
+    assert_match(/el\.when-let takes arguments in unevaluated/, diags[1].message)
   end
 
   def test_parses_times_as_a_counting_loop

@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.15
+# Ruri language contract — version 0.16
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.15: every construct below is supported,
+is the exact scope of version 0.16: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -93,31 +93,52 @@ everything else is rejected with a source position.
   assignment methods.
 - Ruri does not keep an Emacs function catalogue or enforce arity. The Emacs
   byte compiler and runtime report unknown functions and invalid arguments.
-- Calls whose arguments live in unevaluated positions — binding lists,
-  patterns, or variable names — cannot pass through the generic path (the
-  arguments would be emitted as evaluated calls and fail only at runtime),
-  so they are rejected at compile time with a pointer to the typed form
-  that covers them: `el.let`/`el.let_star` (use `let`), `el.setq`
-  (use `assign`), `el.setq_local` (use `assign_local`),
-  `el.dolist`/`el.cl_dolist` (use `.each`), `el.dotimes`
-  and `el.cl_dotimes` (use `.times`), `el.pcase`, `el.cl_loop`,
-  `el.cl_destructuring_bind`, `el.seq_let`, `el.when_let`, and
-  `el.if_let` (no Ruri equivalent; rejected outright). The same rule
-  covers definition forms whose first argument is a name in an
-  unevaluated symbol position: `el.defun`, `el.cl_defun`, `el.defsubst`,
-  and `el.defmacro`; `el.defvar`, `el.defconst`, `el.defvar_local`, and
-  `el.defcustom` (use `variable`, `constant`, `variable_local`, and
-  `custom`); `el.cl_defstruct`; and the mode definitions `el.define_minor_mode`
-  (use `mode`) and `el.define_derived_mode` (use `derived_mode`).
-  `el.define_globalized_minor_mode` and `el.define_generic_mode` remain
-  rejected with no Ruri equivalent. The same rule covers macros whose
-  whole body is unevaluated: `el.rx` (pass a regexp string, or build one
-  at runtime with `el.rx_to_string` over quoted data) and
-  `el.syntax_propertize_rules` (no Ruri equivalent). Evaluated-name forms are deliberately not on
-  this list: `el.defalias`'s first argument is evaluated, so the quote a
-  symbol literal receives is exactly correct. The place-taking
-  operators `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf`
-  are supported as typed forms (see the construct table).
+- Calls whose arguments live in unevaluated positions cannot pass through
+  the generic path (the arguments would be emitted as evaluated calls and
+  fail or silently miscompile only at runtime), so they are rejected at
+  compile time with a pointer to the construct that covers them. A form
+  belongs on the list when a name or symbol sits in an unevaluated
+  position, or when its binding list, clause list, pattern, arglist, or
+  entire body is unevaluated; the test is falsifiable — compile the call,
+  load it in batch Emacs, and see whether the quoting the generic path
+  applies breaks it. The list covers binding and assignment shapes
+  (`el.let`/`el.let_star` — use `let`; `el.setq` — use `assign`;
+  `el.setq_local` — use `assign_local`; `el.setq_default` — use
+  `el.set_default`; `el.lambda` — use `fn`; and `el.dlet`, `el.letrec`,
+  `el.named_let`, `el.cl_flet`, `el.cl_labels`, `el.cl_letf`,
+  `el.while_let`, `el.when_let`, `el.if_let`, `el.pcase_let`,
+  `el.pcase_setq`, and `el.cl_do` — destructuring, recursion, and dynamic
+  rebinding have no Ruri construct, with `let`/`fn`/`while` covering most
+  cases), iteration (`el.dolist`, `el.cl_dolist`, `el.dotimes`,
+  `el.cl_dotimes`, `el.dotimes_with_progress_reporter`,
+  `el.dolist_with_progress_reporter`, `el.seq_doseq`, and
+  `el.pcase_dolist` — use `.each` or `.times`), conditionals whose clause
+  lists are unevaluated (`el.cond`, `el.cl_case`, and `el.cl_typecase` —
+  use `if`/`elsif`; `el.pcase` and `el.cl_loop` — no Ruri equivalent;
+  `el.cl_destructuring_bind` and `el.seq_let` — no destructuring),
+  definitions with unevaluated names (`el.defun`, `el.cl_defun`,
+  `el.defsubst`, `el.defmacro`, `el.cl_defmacro`, `el.cl_defmethod`, and
+  `el.cl_defgeneric`; `el.defvar`, `el.defconst`, `el.defvar_local`, and
+  `el.defcustom` — use `variable`, `constant`, `variable_local`, and
+  `custom`; `el.defface` and `el.defgroup`; `el.cl_defstruct`; and the
+  mode definitions `el.define_minor_mode` — use `mode` — and
+  `el.define_derived_mode` — use `derived_mode`, with
+  `el.define_globalized_minor_mode` and `el.define_generic_mode` having
+  no Ruri equivalent), abbrev tables (`el.define_abbrev_table` — its
+  `:parents` and other keyword properties arrive as quoted symbols and
+  are silently dropped; use `el.make_abbrev_table` with
+  `el.define_abbrev`, and `el.abbrev_table_put` for properties), error
+  handling (`el.condition_case` — use
+  `begin`/`rescue`), and macros whose whole body is unevaluated (`el.rx`
+  — pass a regexp string, or build one at runtime with `el.rx_to_string`
+  over quoted data; and `el.syntax_propertize_rules` — no Ruri
+  equivalent). Evaluated-argument forms are deliberately not on the
+  list: `when`, `unless`, `with-eval-after-load`, `add-to-list`, and
+  `rx-to-string` run correctly through the generic path, and
+  `el.defalias`'s first argument is evaluated, so the quote a symbol
+  literal receives is exactly correct. The place-taking operators
+  `el.setf`, `el.push`, `el.pop`, `el.cl_incf`, and `el.cl_decf` are
+  supported as typed forms (see the construct table).
 
 ## Expressions
 
@@ -241,6 +262,12 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 - Parameters and assigned locals use hygienic `ruri--local-` names. Assigning
   to a parameter mutates its argument binding; other assigned names are
   initialized in a lexical `let` around the body.
+- A parameter whose name begins with an underscore (`_unused`, or bare `_`)
+  marks a deliberately unused binding, in `function`, `command`, `fn`,
+  `let`, and the iteration forms. Its generated Elisp name keeps the
+  leading underscore instead of the hygienic prefix, so the byte compiler
+  suppresses its unused-argument warning; the name may still be read and
+  resolves to that same symbol.
 - The final supported expression supplies the return value. A final `if` or
   `unless` applies the same rule to every branch, so the selected branch value
   becomes the result. An omitted branch returns `nil` through normal Elisp
@@ -397,6 +424,23 @@ structure safely:
    emitting real `define-minor-mode` and `define-derived-mode` macro
    calls, and completes the rejection of definition macros with
    unevaluated name positions (v0.14).
+8. Admission rule widening; v0.16 rejects every verified member of the
+   unevaluated-position class — binding lists (`el.dlet`, `el.letrec`,
+   `el.named_let`, `el.cl_flet`, `el.cl_labels`, `el.cl_letf`,
+   `el.while_let`, `el.pcase_let`, `el.pcase_setq`, `el.pcase_dolist`,
+   `el.cl_do`, the progress-reporter loops, `el.seq_doseq`), clause
+   lists (`el.cond`, `el.cl_case`, `el.cl_typecase`), unevaluated names
+   (`el.setq_default`, `el.defface`, `el.defgroup`, `el.cl_defmacro`,
+   `el.cl_defmethod`, `el.cl_defgeneric`), `el.lambda` (arglist), and
+   `el.condition_case` — each verified to break or silently miscompile
+   in batch Emacs before admission, with `begin`/`rescue`, `if`/`elsif`,
+   `let`, `fn`, `.each`, and `.times` as the stated coverage. `el.define_abbrev_table`
+   joined during review of the julia-mode port: its `:parents` keyword
+   arrives as a quoted symbol and the property is silently dropped. The
+   same port drove the underscore-prefixed discard-parameter form: a
+   binding named `_unused` (or bare `_`) emits its Elisp name with the
+   leading underscore kept, so the byte compiler suppresses its
+   unused-argument warning for callback lambdas.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still
