@@ -19,19 +19,16 @@
 # 3. (Resolved on review: the rx operator symbol `*` is writable directly
 #    as the Ruri literal `:*` — inside quoted and quasiquoted data it emits
 #    `*` unquoted, so no runtime el.intern is needed.)
-# 4. `if`/`unless` are not expressions in argument or initializer position,
-#    so conditionals that the original inlines into a let* initializer or
-#    call argument are computed into locals first.
-# 5. Dynamic let-bindings (case-fold-search, resize-mini-windows) have no
+# 4. Dynamic let-bindings (case-fold-search, resize-mini-windows) have no
 #    Ruri construct; the port saves and restores them manually with
 #    var/assign around the affected region.
-# 6. Top-level executable forms — the (or ... (setq ...)) syntax-table
+# 5. Top-level executable forms — the (or ... (setq ...)) syntax-table
 #    memoization and the progn registering auto-mode-alist entries — are
 #    not expressible in Ruri. The syntax table becomes a defconst whose
 #    value is the constructing expression; auto-mode-alist registration is
 #    omitted (users add CMakeLists.txt/*.cmake to auto-mode-alist
 #    themselves or through package.el's generated autoloads).
-# 7. cmake--syntax-propertize-function relies on the syntax-propertize-rules
+# 6. cmake--syntax-propertize-function relies on the syntax-propertize-rules
 #    macro (unevaluated rule forms), now rejected at compile time rather
 #    than miscompiling. Bracket-argument/comment syntax
 #    propertization #[[...]] is therefore omitted; highlighting and
@@ -294,25 +291,10 @@ command :cmake_command_run do |type, topic = nil, buffer = nil|
   doc "Runs the command cmake with the arguments specified.  The\noptional argument topic will be appended to the argument list."
   interactive "s"
   let do |bufname, buf, command|
-    dash = nil
-    if topic
-      dash = "-"
-    end
-    if buffer
-      bufname = buffer
-    else
-      bufname = el.concat("*CMake", type, dash, topic, "*")
-    end
-    if el.get_buffer(bufname)
-      buf = el.get_buffer(bufname)
-    else
-      buf = el.generate_new_buffer(bufname)
-    end
-    quoted_topic = topic
-    if topic
-      quoted_topic = el.shell_quote_argument(topic)
-    end
-    command = el.concat(var(:cmake_mode_cmake_executable), " ", type, " ", quoted_topic)
+    bufname = if buffer then buffer else el.concat("*CMake", type, (if topic then "-" end), topic, "*") end
+    buf = if el.get_buffer(bufname) then el.get_buffer(bufname) else el.generate_new_buffer(bufname) end
+    command = el.concat(var(:cmake_mode_cmake_executable), " ", type, " ",
+                        (if topic then el.shell_quote_argument(topic) else topic end))
     # The original let-binds resize-mini-windows dynamically.
     saved_resize = var(:resize_mini_windows)
     assign :resize_mini_windows, nil
@@ -331,25 +313,10 @@ command :cmake_command_run_help do |type, topic = nil, buffer = nil|
   doc "Like `cmake-command-run', but rendered in `rst-mode'."
   interactive "s"
   let do |bufname, buf, command|
-    dash = nil
-    if topic
-      dash = "-"
-    end
-    if buffer
-      bufname = buffer
-    else
-      bufname = el.concat("*CMake", type, dash, topic, "*")
-    end
-    if el.get_buffer(bufname)
-      buf = el.get_buffer(bufname)
-    else
-      buf = el.generate_new_buffer(bufname)
-    end
-    quoted_topic = topic
-    if topic
-      quoted_topic = el.shell_quote_argument(topic)
-    end
-    command = el.concat(var(:cmake_mode_cmake_executable), " ", type, " ", quoted_topic)
+    bufname = if buffer then buffer else el.concat("*CMake", type, (if topic then "-" end), topic, "*") end
+    buf = if el.get_buffer(bufname) then el.get_buffer(bufname) else el.generate_new_buffer(bufname) end
+    command = el.concat(var(:cmake_mode_cmake_executable), " ", type, " ",
+                        (if topic then el.shell_quote_argument(topic) else topic end))
     saved_resize = var(:resize_mini_windows)
     assign :resize_mini_windows, nil
     el.shell_command(command, buf)

@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.16
+# Ruri language contract — version 0.17
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.16: every construct below is supported,
+is the exact scope of version 0.17: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -50,8 +50,8 @@ everything else is rejected with a source position.
 | `assign_local :name, value [, :name2, value2 …]` | Emits `(setq-local name value …)`, making the variables buffer-local in the current buffer. Same shape and literal-symbol rules as `assign`; a typed form because the name is an unevaluated position. |
 | `assign :name, value [, :name2, value2 …]` | Emits `(setq name value …)`, writing an Emacs Lisp (dynamic or buffer-local) variable rather than a definition-local. Variable names are literal symbols in unevaluated position, so this is a typed form rather than an `el.setq` call, which would wrongly quote the symbol. Requires an even number of arguments; every odd position must be a literal symbol matching `[a-z][a-z0-9_]*`. |
 | `keyword :begin` | Emits the self-quoting Elisp keyword `:begin`. A plain symbol literal would emit `(quote begin)`, which is the wrong shape where keywords are expected, such as `org-element-property` arguments. Exactly one literal symbol argument matching `[a-z][a-z0-9_]*`. |
-| `if condition … elsif condition … else … end` | Evaluates supported expression conditions with Emacs Lisp truth semantics. Branches contain ordinary supported statements. `elsif` and `else` are optional. |
-| `unless condition … else … end` | The negated conditional form. The `else` branch is optional. |
+| `if condition … elsif condition … else … end` | Evaluates supported expression conditions with Emacs Lisp truth semantics. Branches contain ordinary supported statements. `elsif` and `else` are optional. Valid as a statement or in any expression position — a call argument, an assignment right-hand side, a `let` initializer — where the selected branch's value is the result. An omitted `else` yields `nil`, and a branch whose body produces no value (for example a lone `while`) yields `nil`. The ternary `condition ? a : b` is the same construct. |
+| `unless condition … else … end` | The negated conditional form. The `else` branch is optional. Valid in the same statement and expression positions as `if`, with the same value semantics. |
 | `fn do \|value\| … end` | Creates a lexical lambda: `(lambda (ruri--local-value) …)`. Required, optional, and rest positional parameters are accepted (see Function definitions). The body uses normal Ruri statements and may capture surrounding locals. |
 | `function(:buffer_name)` | Creates the named function value `(function buffer-name)`. The literal symbol is normalized from snake_case to kebab-case. |
 | `list(1, :two)` | Constructs an evaluated Lisp list: `(list 1 'two)`. Unlike Ruby array syntax, this produces a list rather than a vector. |
@@ -144,6 +144,8 @@ everything else is rejected with a source position.
 
 Expressions are allowed as assignment values, conditional predicates,
 arguments to `el.*` calls, and final values in functions and lambdas.
+A conditional — keyword `if`/`unless` or the ternary — is itself an
+expression and may nest anywhere an expression is allowed.
 
 | Ruby expression | Emacs Lisp output | Meaning |
 | --- | --- | --- |
@@ -163,6 +165,8 @@ arguments to `el.*` calls, and final values in functions and lambdas.
 | `quote(list(:a, :b))` | `'(a b)` | Literal data without evaluation |
 | `quasiquote(list(:a, unquote(value)))` | `` `(a ,ruri--local-value) `` | Data template with evaluated positions |
 | `a + b`, `a == b`, `a && b` | `(+ a b)`, `(equal a b)`, `(and a b)` | Arithmetic, comparison, and short-circuit logic |
+| `if flag then "a" else "b" end` | `(if flag "a" "b")` | Conditional expression; the selected branch's value is the result and an omitted `else` yields `nil` |
+| `flag ? 1 : 2` | `(if flag 1 2)` | Ternary conditional — the same construct as keyword `if` |
 
 Ruby arrays lower to a call to `vector`, rather than bracket syntax, because an
 Emacs vector literal is self-evaluating and would not evaluate nested calls.
@@ -271,7 +275,8 @@ Emacs vector literal is self-evaluating and would not evaluate nested calls.
 - The final supported expression supplies the return value. A final `if` or
   `unless` applies the same rule to every branch, so the selected branch value
   becomes the result. An omitted branch returns `nil` through normal Elisp
-  conditional semantics.
+  conditional semantics. The same value rules apply to a conditional in any
+  expression position, not just the final statement (see Expressions).
 - Recursion and calls to other Ruri definitions use the explicit namespace,
   such as `el.factorial(number - 1)`. `function(:factorial)` creates a named
   function value for callbacks and higher-order calls.
@@ -441,6 +446,14 @@ structure safely:
    binding named `_unused` (or bare `_`) emits its Elisp name with the
    leading underscore kept, so the byte compiler suppresses its
    unused-argument warning for callback lambdas.
+9. Value-position conditionals; v0.17 accepts `if`, `unless`, and the
+   ternary in every expression position — call arguments, assignment
+   right-hand sides, and `let` initializers — with the selected branch's
+   value as the result, an omitted `else` yielding `nil`, and exit-tag
+   allocation that sees `return`/`break`/`next` nested in argument
+   position. The hoist-into-a-local workarounds recorded by the
+   julia-mode and cmake-mode ports (their deviation 7 and 4) were
+   deleted once the construct landed.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still

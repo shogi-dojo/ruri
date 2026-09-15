@@ -169,6 +169,46 @@
         (should (equal "right" (buffer-string))))
       (should (eq case-fold-search 'untouched)))))
 
+(ert-deftest ruri-test/conditionals-in-value-position-run-in-emacs ()
+  (let* ((dir (make-temp-file "ruri value-position " t))
+         (source (expand-file-name "value-position.ruri" dir)))
+    (with-temp-file source
+      (insert "function :pick do |flag, other|\n"
+              "  el.concat(if flag then \"a\" elsif other then \"b\" else \"c\" end,\n"
+              "            (if flag then \"!\" end))\n"
+              "end\n\n"
+              "function :pick_rhs do |flag|\n"
+              "  picked = if flag then 1 else 2 end\n"
+              "  ternary = flag ? \"on\" : \"off\"\n"
+              "  el.format(\"%d%s\", picked, ternary)\n"
+              "end\n\n"
+              "function :pick_initializer do |flag, fallback|\n"
+              "  let do |v = if flag then \"direct\" else fallback end|\n"
+              "    v\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (equal "a!" (pick t nil)))
+    (should (equal "b" (pick nil t)))
+    (should (equal "c" (pick nil nil)))
+    (should (equal "1on" (pick-rhs t)))
+    (should (equal "2off" (pick-rhs nil)))
+    (should (equal "direct" (pick-initializer t "fb")))
+    (should (equal "fb" (pick-initializer nil "fb")))))
+
+(ert-deftest ruri-test/return-in-value-position-lands-its-catch-tag ()
+  (let* ((dir (make-temp-file "ruri return-value " t))
+         (source (expand-file-name "return-value.ruri" dir)))
+    (with-temp-file source
+      (insert "function :early do |flag|\n"
+              "  el.message(\"flag is %s\", flag)\n"
+              "  el.concat(\"kept \",\n"
+              "            (if flag then return \"early\" else \"late\" end))\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (equal "early" (early t)))
+    (should (equal "kept late" (early nil)))))
+
 (ert-deftest ruri-test/generic-block-forms-run-in-emacs ()
   (let* ((dir (make-temp-file "ruri block forms " t))
          (source (expand-file-name "blocks.ruri" dir)))

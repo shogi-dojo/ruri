@@ -117,43 +117,27 @@ module Ruri
       statements.any? { |form| form_has_exit?(form, klass, boundaries) }
     end
 
+    # Exits are found by a structural walk over the typed form tree: an
+    # exit may hide in any nested form position, not just statement
+    # bodies — a `return` inside a conditional used as a call argument,
+    # a `break` in a loop condition, a return in a `let` initializer.
+    # Every Data member therefore descends; boundaries still stop the
+    # walk, so a `return` inside an `fn` belongs to that `fn` alone.
     def form_has_exit?(form, klass, boundaries)
       return true if form.instance_of?(klass)
       return false if boundaries.any? { |boundary| form.instance_of?(boundary) }
 
-      case form
-      when Forms::Conditional
-        body_has_exit?(form.then_body, klass, boundaries) ||
-          body_has_exit?(form.else_body, klass, boundaries)
-      when Forms::Loop
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::Each
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::Iteration
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::Times
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::Rescue
-        body_has_exit?(form.body, klass, boundaries) ||
-          form.clauses.any? { |_, body| body_has_exit?(body, klass, boundaries) } ||
-          body_has_exit?(form.else_body, klass, boundaries)
-      when Forms::Ensure
-        body_has_exit?(form.body, klass, boundaries) ||
-          body_has_exit?(form.ensure_body, klass, boundaries)
-      when Forms::Catch
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::Let
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::WithCurrentBuffer
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::Call
-        body_has_exit?(form.body, klass, boundaries)
-      when Forms::PlaceOperation
-        if form.place.is_a?(Forms::Call)
-          form_has_exit?(form.place, klass, boundaries)
-        else
-          false
-        end || form.arguments.any? { |argument| form_has_exit?(argument, klass, boundaries) }
+      form.deconstruct.any? { |member| member_has_exit?(member, klass, boundaries) }
+    end
+
+    def member_has_exit?(member, klass, boundaries)
+      case member
+      when Data
+        form_has_exit?(member, klass, boundaries)
+      when Array
+        member.any? { |element| member_has_exit?(element, klass, boundaries) }
+      when Hash
+        member.each_value.any? { |value| member_has_exit?(value, klass, boundaries) }
       else
         false
       end
@@ -570,6 +554,8 @@ module Ruri
           *expression.arguments.map { |argument| lower_expression(argument) }
         )
         expression.negated ? Elisp.list(Elisp.symbol("not"), operation) : operation
+      when Forms::Conditional
+        lower_conditional(expression)
       when Forms::Rescue
         lower_rescue(expression)
       when Forms::Ensure

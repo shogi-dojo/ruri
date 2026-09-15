@@ -699,6 +699,51 @@ end')
                        negated.condition.arguments.first
   end
 
+  def test_parses_conditionals_in_value_position
+    function = parse(<<~RURI).first
+      function :value_positions do |flag, other|
+        el.message("%s", if flag then "a" elsif other then "b" else "c" end)
+        picked = if flag then 1 else 2 end
+        let do |v = if flag then true else other end|
+          el.message("%s", v)
+        end
+      end
+    RURI
+
+    argument, assignment, block = function.body
+    argument_conditional = argument.arguments[1]
+    assert_instance_of Ruri::Forms::Conditional, argument_conditional
+    assert_instance_of Ruri::Forms::ExpressionStatement,
+                       argument_conditional.then_body.first
+    assert_instance_of Ruri::Forms::Conditional,
+                       argument_conditional.else_body.first
+    assert_instance_of Ruri::Forms::ExpressionStatement,
+                       argument_conditional.else_body.first.then_body.first
+
+    assert_instance_of Ruri::Forms::LocalWrite, assignment
+    assert_instance_of Ruri::Forms::Conditional, assignment.value
+    assert_equal [1], assignment.value.then_body.map(&:expression).map(&:value)
+
+    assert_instance_of Ruri::Forms::Let, block.expression
+    initializer = block.expression.parameters.optionals.first.default
+    assert_instance_of Ruri::Forms::Conditional, initializer
+    assert_equal false, initializer.negated
+  end
+
+  def test_parses_ternary_as_a_conditional_in_value_position
+    function = parse(<<~RURI).first
+      function :ternary do |flag|
+        el.message("%s", flag ? 1 : 2)
+      end
+    RURI
+
+    conditional = function.body.first.arguments[1]
+    assert_instance_of Ruri::Forms::Conditional, conditional
+    assert_equal false, conditional.negated
+    assert_equal [1], conditional.then_body.map(&:expression).map(&:value)
+    assert_equal [2], conditional.else_body.map(&:expression).map(&:value)
+  end
+
   def test_parses_boolean_comparison_and_arithmetic_operators
     command = parse(<<~RURI).first
       command :operators do
