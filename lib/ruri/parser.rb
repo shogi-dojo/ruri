@@ -1370,7 +1370,7 @@ module Ruri
     # cannot be lowered, or nil when it is fine.
     def exit_placement_error(_node, name)
       nearest = @exit_scopes.reverse.find do |kind|
-        %i[loop fn definition block dynamic_let].include?(kind)
+        %i[loop fn definition block dynamic_let init].include?(kind)
       end
       if nearest == :loop
         nil
@@ -1380,6 +1380,8 @@ module Ruri
         "`#{name}` cannot cross a let block boundary; use it directly inside the loop"
       elsif nearest == :dynamic_let
         "`#{name}` cannot cross a dynamic_let block boundary; use it directly inside the loop"
+      elsif nearest == :init
+        "`#{name}` is only allowed inside while, until, or each, not directly in an init block"
       else
         "`#{name}` is only allowed inside while, until, or each"
       end

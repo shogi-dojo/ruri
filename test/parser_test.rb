@@ -829,6 +829,16 @@ end')
     assert_match(/`break` cannot cross a dynamic_let block boundary/, diagnostics[0].message)
   end
 
+  def test_names_init_context_when_break_appears_directly_in_it
+    diagnostics = diagnostics_of(<<~RURI)
+      init do
+        break
+      end
+    RURI
+
+    assert_match(/not directly in an init block/, diagnostics[0].message)
+  end
+
   def test_parses_init_blocks_in_source_order_among_definitions
     definitions = parse(<<~RURI)
       function :early do
