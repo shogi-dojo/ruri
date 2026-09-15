@@ -15,6 +15,12 @@ module Ruri
     # generated Elisp name keeps the leading underscore, so the byte
     # compiler suppresses its unused-argument warning for it.
     DISCARD_NAME_RE = /\A_[a-z0-9_]*\z/.freeze
+    # Definition and declaration statements that are valid only at the top
+    # level of a .ruri file. Listed once so both the statement dispatcher
+    # and the expression path report the same diagnostic for them.
+    TOP_LEVEL_ONLY_STATEMENTS = %i[
+      variable constant custom mode derived_mode variable_local require provide
+    ].freeze
     BINARY_OPERATORS = {
       :+ => "+", :- => "-", :* => "*", :/ => "/", :% => "mod",
       :** => "expt", :< => "<", :<= => "<=", :> => ">", :>= => ">=",
@@ -927,8 +933,7 @@ module Ruri
       case stmt.name
       when :command
         error(stmt.location, "nested command definitions are not supported")
-      when :variable, :constant, :custom, :mode, :derived_mode,
-           :variable_local, :require, :provide
+      when *TOP_LEVEL_ONLY_STATEMENTS
         error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
       when :function
         if stmt.block
@@ -2295,8 +2300,9 @@ module Ruri
       return true unless node.is_a?(Prism::CallNode)
       return false if %i[each times].include?(node.name) && node.receiver
       return false if node.receiver.nil? &&
-                      %i[interactive command with_current_buffer insert doc assign
-                         assign_local mode derived_mode].include?(node.name)
+                      (%i[interactive command with_current_buffer insert doc assign
+                          assign_local].include?(node.name) ||
+                       TOP_LEVEL_ONLY_STATEMENTS.include?(node.name))
       return false if node.receiver.nil? && node.name == :function && node.block
 
       true

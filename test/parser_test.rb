@@ -2181,4 +2181,23 @@ end')
 
     assert_match(/mode is only allowed at the top level of a \.ruri file/, diag.message)
   end
+
+  # A function body's final statement is parsed as a value expression, which
+  # previously bypassed the statement dispatcher and degraded these to the
+  # generic "unsupported expression" message. The diagnostic must not depend
+  # on whether the statement happens to be last.
+  def test_rejects_top_level_only_statements_in_final_body_position
+    %w[variable constant variable_local require provide].each do |name|
+      argument = %w[require provide].include?(name) ? ":feature_x" : ":thing, 1"
+      diag = single_diagnostic(<<~RURI)
+        function :nested do
+          el.ignore(1)
+          #{name} #{argument}
+        end
+      RURI
+
+      assert_match(/#{name} is only allowed at the top level of a \.ruri file/,
+                   diag.message, "#{name} as the final statement")
+    end
+  end
 end
