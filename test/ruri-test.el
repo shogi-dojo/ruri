@@ -209,6 +209,55 @@
     (should (equal "early" (early t)))
     (should (equal "kept late" (early nil)))))
 
+(ert-deftest ruri-test/dynamic-let-rebinds-and-restores-in-emacs ()
+  (let* ((dir (make-temp-file "ruri dynamic-let " t))
+         (source (expand-file-name "dynamic-let.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_dlet_probe_var, \"outer\", \"Probe variable.\"\n\n"
+              "function :probe_inner do\n"
+              "  var(:ruri_dlet_probe_var)\n"
+              "end\n\n"
+              "function :probe do\n"
+              "  dynamic_let :ruri_dlet_probe_var, \"inside\" do\n"
+              "    el.funcall(function(:probe_inner))\n"
+              "  end\n"
+              "end\n\n"
+              "function :probe_signal do |data|\n"
+              "  dynamic_let :ruri_dlet_probe_var, \"inside\" do\n"
+              "    el.signal(:error, data)\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The callee sees the rebinding: dlet binds dynamically, which a
+    ;; plain lexical let would not do for a callee.
+    (should (equal "inside" (probe)))
+    (should (equal "outer" ruri-dlet-probe-var))
+    ;; The binding unwinds on the error path too — the failure mode of
+    ;; hand-rolled save/restore without an ensure.
+    (condition-case nil (probe-signal "boom") (error nil))
+    (should (equal "outer" ruri-dlet-probe-var))))
+
+(ert-deftest ruri-test/init-blocks-run-at-load-in-source-order ()
+  (let* ((dir (make-temp-file "ruri init " t))
+         (source (expand-file-name "init.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_init_probe_var, nil, \"Probe variable.\"\n\n"
+              "init do\n"
+              "  assign :ruri_init_probe_var, \"first\"\n"
+              "end\n\n"
+              "function :init_reader_fn do\n"
+              "  var(:ruri_init_probe_var)\n"
+              "end\n\n"
+              "init do\n"
+              "  assign :ruri_init_probe_var,\n"
+              "         el.concat(var(:ruri_init_probe_var), \" second\")\n"
+              "  el.message(\"init ran\")\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (equal "first second" ruri-init-probe-var))
+    (should (functionp #'init-reader-fn))
+    (should (equal "first second" (init-reader-fn)))))
+
 (ert-deftest ruri-test/generic-block-forms-run-in-emacs ()
   (let* ((dir (make-temp-file "ruri block forms " t))
          (source (expand-file-name "blocks.ruri" dir)))
@@ -953,6 +1002,21 @@ while `variable_local' next to it was fenced, so check the whole set."
     (should (commandp 'cmake-help-command))
     (should (commandp 'cmake-unscreamify-buffer))))
 
+(ert-deftest ruri-test/cmake-mode-port-auto-activates-on-visit ()
+  (let* ((dir (make-temp-file "ruri cmake-auto " t))
+         (source (expand-file-name "cmake-mode.ruri" dir))
+         ;; The port's init block mutates auto-mode-alist at load; the
+         ;; let-binding keeps the mutation contained to this test.
+         (auto-mode-alist auto-mode-alist))
+    (copy-file (expand-file-name "examples/cmake-mode.ruri" ruri-test--root) source t)
+    (ruri-load-file source)
+    (dolist (name '("CMakeLists.txt" "helper.cmake"))
+      (let ((file (expand-file-name name dir)))
+        (with-temp-file file (insert "# probe\n"))
+        (with-current-buffer (find-file-noselect file)
+          (should (eq major-mode 'cmake-mode))
+          (kill-buffer))))))
+
 (ert-deftest ruri-test/julia-mode-port-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri julia " t))
          (original (expand-file-name "examples/julia-mode.ruri" ruri-test--root))
@@ -1009,11 +1073,27 @@ while `variable_local' next to it was fenced, so check the whole set."
       (goto-char (point-max))
       (julia-latexsub-or-indent)
       (should (equal "α" (buffer-string))))
-    ;; defcustoms keep their values.
-    (should (= 4 julia-indent-offset))
+    ;; The generated data table was ported in full, not as a stub.
+    (should (= 3698 (hash-table-count julia-mode-latexsubs)))
+    (should (equal "∑" (gethash "\\sum" julia-mode-latexsubs)))
+    ;; defcustoms keep their values.    (should (= 4 julia-indent-offset))
     (should (= 20000 julia-max-block-lookback))
     (should (commandp 'julia-fill-paragraph))
     (should (commandp 'julia-end-of-defun))))
+
+(ert-deftest ruri-test/julia-mode-port-auto-activates-on-visit ()
+  (let* ((dir (make-temp-file "ruri julia-auto " t))
+         (source (expand-file-name "julia-mode.ruri" dir))
+         ;; The port's init block mutates auto-mode-alist at load; the
+         ;; let-binding keeps the mutation contained to this test.
+         (auto-mode-alist auto-mode-alist))
+    (copy-file (expand-file-name "examples/julia-mode.ruri" ruri-test--root) source t)
+    (ruri-load-file source)
+    (let ((file (expand-file-name "probe.jl" dir)))
+      (with-temp-file file (insert "x = 1\n"))
+      (with-current-buffer (find-file-noselect file)
+        (should (eq major-mode 'julia-mode))
+        (kill-buffer)))))
 
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))

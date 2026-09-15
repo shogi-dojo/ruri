@@ -15,6 +15,12 @@ module Ruri
     # generated Elisp name keeps the leading underscore, so the byte
     # compiler suppresses its unused-argument warning for it.
     DISCARD_NAME_RE = /\A_[a-z0-9_]*\z/.freeze
+    # Definition and declaration statements that are valid only at the top
+    # level of a .ruri file. Listed once so both the statement dispatcher
+    # and the expression path report the same diagnostic for them.
+    TOP_LEVEL_ONLY_STATEMENTS = %i[
+      variable constant custom mode derived_mode variable_local require provide
+    ].freeze
     BINARY_OPERATORS = {
       :+ => "+", :- => "-", :* => "*", :/ => "/", :% => "mod",
       :** => "expt", :< => "<", :<= => "<=", :> => ">", :>= => ">=",
@@ -53,7 +59,7 @@ module Ruri
     UNEVALUATED_POSITION_CALLS = {
       "let" => "use the Ruri let form",
       "let-star" => "use the Ruri let form; it binds sequentially",
-      "dlet" => "Ruri cannot destructure; bind with let and read with el.car and el.nth",
+      "dlet" => "use the Ruri dynamic_let form",
       "letrec" => "use let with fn; the body sees the binding, so recursion works",
       "named-let" => "rewrite the loop as a top-level function, or use .times/.each",
       "setq" => "use assign(:name, value)",
@@ -293,8 +299,40 @@ module Ruri
       when :variable_local then parse_variable_definition(node, "variable_local", "defvar-local", false)
       when :require then parse_feature_form(node, :require)
       when :provide then parse_feature_form(node, :provide)
+      when :init then parse_init(node)
       else unsupported(node)
       end
+    end
+
+    # `init do … end` is load-time setup, the one allowed non-definition
+    # at the top level: its body forms are emitted in source order when
+    # the generated file loads. No parameters, no docstring, no
+    # interactive, and no return (there is no enclosing definition to
+    # return from).
+    def parse_init(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `init` with explicit receiver")
+        return
+      end
+      if node.arguments
+        error(node.location, "init takes no call arguments")
+        return
+      end
+      unless node.block
+        error(node.location, "init requires a do...end block")
+        return
+      end
+      if node.block.parameters
+        error(block_parameters_location(node.block), "init blocks do not take parameters")
+        return
+      end
+
+      body = with_local_scope(node.block) do
+        with_exit_scope(:init) do
+          parse_buffer_statements(node.block.body&.body || [])
+        end
+      end
+      @definitions << Forms::Init.new(body: body)
     end
 
     def parse_command_definition(node)
@@ -871,47 +909,10 @@ module Ruri
             interactive_problem_reported = true
             error(stmt.location, "interactive must appear exactly once, directly after the optional docstring")
           end
-        when :command
-          error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :mode, :derived_mode,
-             :variable_local, :require, :provide
-          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
-        when :function
-          if stmt.block
-            error(stmt.location, "nested function definitions are not supported")
-          else
+        else
+          unless append_shared_statement?(stmt, forms)
             unsupported(stmt)
           end
-        when :with_current_buffer
-          if (form = parse_with_current_buffer(stmt))
-            forms << form
-          end
-        when :insert
-          if (form = parse_insert(stmt))
-            forms << form
-          end
-        when :assign
-          if (form = parse_assign_statement(stmt))
-            forms << form
-          end
-        when :assign_local
-          if (form = parse_assign_local_statement(stmt))
-            forms << form
-          end
-        when :catch
-          if (form = parse_catch(stmt))
-            forms << form
-          end
-        when :throw
-          if (form = parse_throw(stmt))
-            forms << form
-          end
-        when :let
-          if (form = parse_let(stmt))
-            forms << form
-          end
-        else
-          unsupported(stmt)
         end
       end
       unless interactive_seen || interactive_problem_reported
@@ -919,6 +920,63 @@ module Ruri
         error(anchor, "command body must start with interactive")
       end
       forms
+    end
+
+    # The statement-dispatch table shared by command bodies and every
+    # other statement body (function, let, init, mode, ...). Handles all
+    # named statements except `doc` and `interactive`, which only a
+    # command body can accept and whose placement rules the
+    # command-body loop owns. Returns true when the statement was
+    # recognized — diagnosed and appended to +forms+ where valid — and
+    # false when the caller should report it as unsupported.
+    def append_shared_statement?(stmt, forms)
+      case stmt.name
+      when :command
+        error(stmt.location, "nested command definitions are not supported")
+      when *TOP_LEVEL_ONLY_STATEMENTS
+        error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
+      when :function
+        if stmt.block
+          error(stmt.location, "nested function definitions are not supported")
+        else
+          unsupported(stmt)
+        end
+      when :with_current_buffer
+        if (form = parse_with_current_buffer(stmt))
+          forms << form
+        end
+      when :insert
+        if (form = parse_insert(stmt))
+          forms << form
+        end
+      when :assign
+        if (form = parse_assign_statement(stmt))
+          forms << form
+        end
+      when :assign_local
+        if (form = parse_assign_local_statement(stmt))
+          forms << form
+        end
+      when :catch
+        if (form = parse_catch(stmt))
+          forms << form
+        end
+      when :throw
+        if (form = parse_throw(stmt))
+          forms << form
+        end
+      when :let
+        if (form = parse_let(stmt))
+          forms << form
+        end
+      when :dynamic_let
+        if (form = parse_dynamic_let(stmt))
+          forms << form
+        end
+      else
+        return false
+      end
+      true
     end
 
     def parse_with_current_buffer(node)
@@ -1212,6 +1270,60 @@ module Ruri
       Forms::Let.new(parameters: generated_parameter_list(parameters), body: body)
     end
 
+    # `dynamic_let :name, value do … end` rebinds an Emacs Lisp variable
+    # for the block's extent. The names sit in an unevaluated position,
+    # so this is a typed form like assign rather than an el.* call; the
+    # names are Elisp variables, not Ruri locals, and lower to their
+    # kebab-case symbols.
+    def parse_dynamic_let(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `dynamic_let` with explicit receiver")
+        return nil
+      end
+      unless node.block
+        error(node.location, "dynamic_let requires a do...end block")
+        return nil
+      end
+      if node.block.parameters
+        error(block_parameters_location(node.block), "dynamic_let blocks do not take parameters")
+        return nil
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "dynamic_let does not accept keyword arguments")
+        return nil
+      end
+      if positional.empty? || positional.length.odd?
+        error(node.location, "dynamic_let requires name/value pairs")
+        return nil
+      end
+
+      pairs = []
+      positional.each_slice(2) do |name_node, value_node|
+        unless literal_symbol_node?(name_node)
+          error(name_node.location, "dynamic_let requires literal symbol variable names")
+          return nil
+        end
+        ok, source_name = extract_symbol(name_node)
+        return nil unless ok
+
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(name_node.location,
+                "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        value = parse_expression(value_node)
+        return nil unless value
+
+        pairs << [source_name.tr("_", "-"), value]
+      end
+      body = with_exit_scope(:dynamic_let) do
+        parse_value_body(node.block.body&.body || [])
+      end
+      Forms::DynamicLet.new(pairs: pairs, body: body)
+    end
+
     def parse_structured_statement(node)
       case node
       when Prism::LocalVariableWriteNode
@@ -1257,6 +1369,10 @@ module Ruri
     end
 
     def parse_return_statement(node)
+      unless @exit_scopes.reverse.any? { |kind| %i[definition fn].include?(kind) }
+        error(node.location,
+              "return is only allowed inside a command, function, or fn body")
+      end
       Forms::Return.new(value: parse_exit_value(node, "return"))
     end
 
@@ -1276,7 +1392,7 @@ module Ruri
     # cannot be lowered, or nil when it is fine.
     def exit_placement_error(_node, name)
       nearest = @exit_scopes.reverse.find do |kind|
-        %i[loop fn definition block].include?(kind)
+        %i[loop fn definition block dynamic_let init].include?(kind)
       end
       if nearest == :loop
         nil
@@ -1284,6 +1400,10 @@ module Ruri
         "`#{name}` cannot cross a fn boundary; use it directly inside while, until, or each"
       elsif nearest == :block
         "`#{name}` cannot cross a let block boundary; use it directly inside the loop"
+      elsif nearest == :dynamic_let
+        "`#{name}` cannot cross a dynamic_let block boundary; use it directly inside the loop"
+      elsif nearest == :init
+        "`#{name}` is only allowed inside while, until, or each, not directly in an init block"
       else
         "`#{name}` is only allowed inside while, until, or each"
       end
@@ -1572,6 +1692,7 @@ module Ruri
         return parse_catch(node) if unqualified_call?(node, :catch)
         return parse_throw(node) if unqualified_call?(node, :throw)
         return parse_let(node) if unqualified_call?(node, :let)
+        return parse_dynamic_let(node) if unqualified_call?(node, :dynamic_let)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -2179,8 +2300,9 @@ module Ruri
       return true unless node.is_a?(Prism::CallNode)
       return false if %i[each times].include?(node.name) && node.receiver
       return false if node.receiver.nil? &&
-                      %i[interactive command with_current_buffer insert doc assign
-                         assign_local mode derived_mode].include?(node.name)
+                      (%i[interactive command with_current_buffer insert doc assign
+                          assign_local].include?(node.name) ||
+                       TOP_LEVEL_ONLY_STATEMENTS.include?(node.name))
       return false if node.receiver.nil? && node.name == :function && node.block
 
       true
@@ -2213,47 +2335,10 @@ module Ruri
           error(stmt.location, "doc is only allowed once, as the first statement of a command or function body")
         when :interactive
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
-        when :command
-          error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :mode, :derived_mode,
-             :variable_local, :require, :provide
-          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
-        when :function
-          if stmt.block
-            error(stmt.location, "nested function definitions are not supported")
-          else
+        else
+          unless append_shared_statement?(stmt, forms)
             unsupported(stmt)
           end
-        when :with_current_buffer
-          if (form = parse_with_current_buffer(stmt))
-            forms << form
-          end
-        when :insert
-          if (form = parse_insert(stmt))
-            forms << form
-          end
-        when :assign
-          if (form = parse_assign_statement(stmt))
-            forms << form
-          end
-        when :assign_local
-          if (form = parse_assign_local_statement(stmt))
-            forms << form
-          end
-        when :catch
-          if (form = parse_catch(stmt))
-            forms << form
-          end
-        when :throw
-          if (form = parse_throw(stmt))
-            forms << form
-          end
-        when :let
-          if (form = parse_let(stmt))
-            forms << form
-          end
-        else
-          unsupported(stmt)
         end
       end
       forms

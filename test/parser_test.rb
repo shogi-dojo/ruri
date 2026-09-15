@@ -744,6 +744,152 @@ end')
     assert_equal [2], conditional.else_body.map(&:expression).map(&:value)
   end
 
+  def test_parses_dynamic_let_in_statement_and_value_positions
+    definitions = parse(<<~RURI)
+      command :rebind do
+        interactive
+        dynamic_let :resize_mini_windows, nil, :case_fold_search, true do
+          el.message("rebound")
+        end
+      end
+
+      function :value_position do
+        dynamic_let :fill_paragraph_function, nil do
+          "inner"
+        end
+      end
+    RURI
+
+    dynamic_let = definitions.first.body[1]
+    assert_instance_of Ruri::Forms::DynamicLet, dynamic_let
+    assert_equal %w[resize-mini-windows case-fold-search],
+                 dynamic_let.pairs.map(&:first)
+    assert_instance_of Ruri::Forms::Literal, dynamic_let.pairs.first[1]
+    assert_nil dynamic_let.pairs.first[1].value
+    assert_equal true, dynamic_let.pairs[1][1].value
+    assert_equal "message", dynamic_let.body.first.name
+
+    tail = definitions.last.body.first
+    assert_instance_of Ruri::Forms::ExpressionStatement, tail
+    assert_instance_of Ruri::Forms::DynamicLet, tail.expression
+    assert_equal ["fill-paragraph-function"], tail.expression.pairs.map(&:first)
+    assert_equal "inner",
+                 tail.expression.body.first.expression.value
+  end
+
+  def test_rejects_malformed_dynamic_let
+    diagnostics = diagnostics_of(<<~RURI)
+      function :bad do
+        dynamic_let :x do
+          el.ignore(1)
+        end
+      end
+
+      function :bad2 do
+        dynamic_let "x", 1 do
+          el.ignore(1)
+        end
+      end
+
+      function :bad3 do
+        dynamic_let :t, 1 do
+          el.ignore(1)
+        end
+      end
+
+      function :bad4 do
+        dynamic_let :x, 1 do |p|
+          el.ignore(p)
+        end
+      end
+
+      function :bad5 do
+        dynamic_let :x, 1
+      end
+    RURI
+
+    assert_match(/dynamic_let requires name\/value pairs/, diagnostics[0].message)
+    assert_match(/dynamic_let requires literal symbol variable names/, diagnostics[1].message)
+    assert_match(/invalid variable name `t`/, diagnostics[2].message)
+    assert_match(/dynamic_let blocks do not take parameters/, diagnostics[3].message)
+    assert_match(/dynamic_let requires a do\.\.\.end block/, diagnostics[4].message)
+  end
+
+  def test_rejects_break_and_next_crossing_a_dynamic_let
+    diagnostics = diagnostics_of(<<~RURI)
+      function :loopy do |xs|
+        xs.each do |x|
+          dynamic_let :some_var, 1 do
+            break x
+          end
+        end
+      end
+    RURI
+
+    assert_match(/`break` cannot cross a dynamic_let block boundary/, diagnostics[0].message)
+  end
+
+  def test_names_init_context_when_break_appears_directly_in_it
+    diagnostics = diagnostics_of(<<~RURI)
+      init do
+        break
+      end
+    RURI
+
+    assert_match(/not directly in an init block/, diagnostics[0].message)
+  end
+
+  def test_parses_init_blocks_in_source_order_among_definitions
+    definitions = parse(<<~RURI)
+      function :early do
+        1
+      end
+
+      init do
+        el.message("first")
+      end
+
+      function :late do
+        2
+      end
+
+      init do
+        el.message("second")
+      end
+    RURI
+
+    kinds = definitions.map { |d| d.class.name.delete_prefix("Ruri::Forms::") }
+    assert_equal ["FunctionDefinition", "Init", "FunctionDefinition", "Init"], kinds
+    assert_equal 1, definitions[1].body.length
+    assert_equal "message", definitions[1].body.first.name
+    assert_equal "second", definitions[3].body.first.arguments.first.value
+  end
+
+  def test_rejects_malformed_init
+    diagnostics = diagnostics_of(<<~RURI)
+      init "setup" do
+        el.ignore(1)
+      end
+
+      init do |x|
+        el.ignore(x)
+      end
+
+      init do
+        return 5
+      end
+
+      init do
+        doc "not here"
+      end
+    RURI
+
+    assert_match(/init takes no call arguments/, diagnostics[0].message)
+    assert_match(/init blocks do not take parameters/, diagnostics[1].message)
+    assert_match(/return is only allowed inside a command, function, or fn body/, diagnostics[2].message)
+    assert_match(/doc is only allowed once, as the first statement/, diagnostics[3].message)
+  end
+
   def test_parses_boolean_comparison_and_arithmetic_operators
     command = parse(<<~RURI).first
       command :operators do
@@ -1719,7 +1865,7 @@ end')
     names = {
       "let" => "the Ruri let form",
       "let_star" => "the Ruri let form",
-      "dlet" => "cannot destructure",
+      "dlet" => "use the Ruri dynamic_let form",
       "letrec" => "use let with fn",
       "named_let" => "top-level function",
       "setq" => "assign",
@@ -2034,5 +2180,24 @@ end')
     RURI
 
     assert_match(/mode is only allowed at the top level of a \.ruri file/, diag.message)
+  end
+
+  # A function body's final statement is parsed as a value expression, which
+  # previously bypassed the statement dispatcher and degraded these to the
+  # generic "unsupported expression" message. The diagnostic must not depend
+  # on whether the statement happens to be last.
+  def test_rejects_top_level_only_statements_in_final_body_position
+    %w[variable constant variable_local require provide].each do |name|
+      argument = %w[require provide].include?(name) ? ":feature_x" : ":thing, 1"
+      diag = single_diagnostic(<<~RURI)
+        function :nested do
+          el.ignore(1)
+          #{name} #{argument}
+        end
+      RURI
+
+      assert_match(/#{name} is only allowed at the top level of a \.ruri file/,
+                   diag.message, "#{name} as the final statement")
+    end
   end
 end

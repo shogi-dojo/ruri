@@ -18,6 +18,7 @@ module Ruri
       @break_tags = []
       @next_tags = []
       @return_tags = []
+      @used_dlet = false
     end
 
     # Boundaries where an exit belongs to the inner construct: nested loops
@@ -25,7 +26,7 @@ module Ruri
     # neither (the parser rejects exits crossing a let).
     LOOP_EXIT_BOUNDARIES = [
       Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration,
-      Forms::Times, Forms::Let
+      Forms::Times, Forms::Let, Forms::DynamicLet
     ].freeze
 
     # `.map` → mapcar, `.select` → seq-filter, `.find` → seq-find. The
@@ -37,24 +38,38 @@ module Ruri
     }.freeze
 
     def lower(definitions)
-      definitions.map do |definition|
-        case definition
-        when Forms::Command then lower_command(definition)
-        when Forms::FunctionDefinition then lower_function_definition(definition)
-        when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
-        when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
-        when Forms::VariableLocalDefinition then lower_variable_definition(definition, "defvar-local")
-        when Forms::CustomDefinition then lower_custom_definition(definition)
-        when Forms::Mode then lower_mode(definition)
-        when Forms::DerivedMode then lower_derived_mode(definition)
-        when Forms::Require then lower_feature(definition, "require")
-        when Forms::Provide then lower_feature(definition, "provide")
-        else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
-        end
+      forms = definitions.flat_map do |definition|
+        lowered = case definition
+                  when Forms::Command then lower_command(definition)
+                  when Forms::FunctionDefinition then lower_function_definition(definition)
+                  when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
+                  when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
+                  when Forms::VariableLocalDefinition then lower_variable_definition(definition, "defvar-local")
+                  when Forms::CustomDefinition then lower_custom_definition(definition)
+                  when Forms::Mode then lower_mode(definition)
+                  when Forms::DerivedMode then lower_derived_mode(definition)
+                  when Forms::Require then lower_feature(definition, "require")
+                  when Forms::Provide then lower_feature(definition, "provide")
+                  when Forms::Init then lower_init(definition)
+                  else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
+                  end
+        lowered.is_a?(Array) ? lowered : [lowered]
       end
+      forms.unshift(subr_x_require) if @used_dlet && !requires_subr_x?(definitions)
+      forms
     end
 
     private
+
+    # `init` emits its body forms at the top level in source order — the
+    # one definition-kind that yields multiple top-level forms. Assigned
+    # locals get the same hygienic let wrapper a definition body gets,
+    # because there is no enclosing scope to hold them otherwise.
+    def lower_init(init)
+      forms = init.body.map { |statement| lower_statement(statement) }
+      locals = collect_locals(init.body)
+      locals.empty? ? forms : wrap_locals(locals, forms)
+    end
 
     def lower_command(command)
       doc_form, statements = partition_docstring(command.body)
@@ -336,6 +351,9 @@ module Ruri
           collect_locals(statement.body, names, shadowed)
         when Forms::Let
           collect_locals(statement.body, names, shadowed + statement.parameters.names)
+        when Forms::DynamicLet
+          statement.pairs.each { |_, value| collect_expression_locals(value, names, shadowed) }
+          collect_locals(statement.body, names, shadowed)
         when Forms::Throw
           collect_expression_locals(statement.value, names, shadowed)
         when Forms::PlaceOperation
@@ -394,6 +412,9 @@ module Ruri
         collect_expression_locals(expression.value, names, shadowed)
       when Forms::Let
         collect_locals(expression.body, names, shadowed + expression.parameters.names)
+      when Forms::DynamicLet
+        expression.pairs.each { |_, value| collect_expression_locals(value, names, shadowed) }
+        collect_locals(expression.body, names, shadowed)
       when Forms::PlaceOperation
         collect_expression_locals(expression.place, names, shadowed) if expression.place.is_a?(Forms::Call)
         expression.arguments.each { |argument| collect_expression_locals(argument, names, shadowed) }
@@ -463,6 +484,8 @@ module Ruri
         lower_throw(statement)
       when Forms::Let
         lower_let(statement)
+      when Forms::DynamicLet
+        lower_dynamic_let(statement)
       when Forms::PlaceOperation
         lower_place_operation(statement)
       when Forms::Break
@@ -568,6 +591,8 @@ module Ruri
         lower_throw(expression)
       when Forms::Let
         lower_let(expression)
+      when Forms::DynamicLet
+        lower_dynamic_let(expression)
       when Forms::PlaceOperation
         lower_place_operation(expression)
       else
@@ -636,6 +661,36 @@ module Ruri
         Elisp.list(*bindings),
         *let_form.body.map { |statement| lower_statement(statement) }
       )
+    end
+
+    # `dynamic_let` lowers to dlet, not plain let: dlet defvars each bound
+    # name before the binding, so a function called inside the block sees
+    # the rebinding even when the variable is not yet special. Plain let
+    # would bind such a variable lexically and callees would silently
+    # miss it — the failure class the unevaluated-position rejections
+    # exist to prevent.
+    def lower_dynamic_let(dynamic_let)
+      @used_dlet = true
+      bindings = dynamic_let.pairs.map do |name, value|
+        Elisp.list(Elisp.symbol(name), lower_expression(value))
+      end
+      Elisp.list(
+        Elisp.symbol("dlet"),
+        Elisp.list(*bindings),
+        *dynamic_let.body.map { |statement| lower_statement(statement) }
+      )
+    end
+
+    # dlet lives in subr-x: preloaded since Emacs 28, but not earlier, so
+    # a generated file that uses dynamic_let carries its own require and
+    # stays self-contained. Skipped when the source already requires the
+    # feature explicitly.
+    def requires_subr_x?(definitions)
+      definitions.any? { |d| d.is_a?(Forms::Require) && d.name == "subr-x" }
+    end
+
+    def subr_x_require
+      Elisp.list(Elisp.symbol("require"), Elisp.quote(Elisp.symbol("subr-x")))
     end
 
     # break/next/return become throws against the current innermost tag;

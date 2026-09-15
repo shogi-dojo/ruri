@@ -1,9 +1,9 @@
-# Ruri language contract — version 0.17
+# Ruri language contract — version 0.18
 
 Ruri (瑠璃) is Ruby-shaped scripting for Emacs. A `.ruri` source file is a
 Ruby-syntax DSL that compiles to an ordinary, dependency-free Emacs Lisp
 file. Ruby syntax is the contract; the Ruby runtime is not. This document
-is the exact scope of version 0.17: every construct below is supported,
+is the exact scope of version 0.18: every construct below is supported,
 everything else is rejected with a source position.
 
 ## Pipeline
@@ -35,11 +35,13 @@ everything else is rejected with a source position.
 | `custom :name, value [, "doc"] [, key: expression …]` | Emits `(defcustom name value ["doc"] [:key expr …])`. Any keyword pairs are accepted and rendered as `:key value` in source order, so standard keywords such as `group:`, `type:`, and `options:` work directly. Each value lowers like any expression, so `type: :string` emits `:type 'string` and richer types use quote/quasiquote data. Keyword names must match `[a-z][a-z0-9_]*` and are normalized from snake_case to kebab-case. |
 | `variable_local :name [, value] [, "doc"]` | Emits `(defvar-local name [value] ["doc"])`, declaring a variable that becomes buffer-local whenever it is set. Accepts the same arguments as `variable`. |
 | `require :name`, `provide :name` | Top-level only; emit `(require 'name)` and `(provide 'name)`, keeping source order among definitions. |
+| `init do … end` | Load-time setup, the one non-definition allowed at the top level: the body's forms are emitted at the top level in source order and run when the generated file loads, so a converted package can register itself (`el.add_to_list(:auto_mode_alist, …)`, hooks). Top-level only; no call arguments, no block parameters, no `doc` or `interactive` inside, and no `return` (there is no enclosing definition). Assigned locals use the hygienic prefix in a wrapping `let`. Multiple `init` blocks are allowed and keep source order among the definitions. |
 | `interactive "P"` | Emits `(interactive "P")`, or plain `(interactive)` without an argument. Exactly once in each command body, directly after the optional docstring. The spec is at most one literal string, read by Emacs at invocation time (`"P"` raw prefix, `"p"` numeric prefix, `"r"` region, `"sPrompt: "` string, and so on); no block. The spec is never evaluated as Ruri code. |
 | `begin … rescue [:cond, …] [=> var] … else … end` | Lowers to `condition-case`. Conditions are literal symbols normalized to Elisp condition names (`:arith_error` → `arith-error`); a bare `rescue` catches the `error` condition. Every clause may bind the same optional `=> var` — one binding, hygienic like other locals, readable in the handlers and (matching Ruby) after the block. `else` becomes a `(:success …)` handler whose value wins when nothing is raised. Valid as a statement or as the final value of a definition. |
 | `begin … [rescue …] ensure … end` | The `ensure` clause lowers to `unwind-protect`: cleanup always runs — including on the error path — and the result is the body's (or handler's) value, never the cleanup's. With both clauses the rescue form nests inside the ensure form. |
 | `catch(:tag) do … end`, `throw :tag, value` | Nonlocal exits with quoted symbol tags: `(catch 'tag …)` and `(throw 'tag value)`. The tag is an unevaluated literal symbol; the catch returns the thrown value, or its last body form's value when nothing is thrown. Throws may cross loops, `condition-case`, and cleanup forms. |
 | `let do \|a = 1, b = a + 1, c\| … end` | Scoped bindings lowering to `let*` with hygienic names. Initializers are evaluated left to right, so each may read the bindings to its left — exactly Ruby's own parameter-default semantics; a binding whose initializer reads its own name sees the outer binding, and a forward reference to a later binding is rejected as an undefined local. A parameter without a default (or with a literal `nil`/`false` one) binds `nil`. The bindings are visible only inside the block, shadow outer locals of the same name, and assignments to them mutate the binding; the block's final form supplies its value. `break` and `next` may not cross a `let` block; `return` passes through to the enclosing definition. No call arguments, no rest parameter. |
+| `dynamic_let :name, value [, :name2, value2 …] do … end` | Rebinds Emacs Lisp variables for the block's extent, lowering to `dlet`: callees see the rebinding even when the variable is not yet special, and the binding unwinds on the error path. The names are dynamic-variable names, not Ruri locals — literal symbols matching `[a-z][a-z0-9_]*` (not `t`/`nil`), normalized to kebab-case, exactly like `assign`. Binding is parallel, like Elisp's own `let`; the body is ordinary statements and its final form supplies the value. `break`/`next` may not cross the block; `return` passes through to the enclosing definition. Valid as a statement or as a value. |
 | `with_current_buffer("*scratch*") do … end` | Emits `(with-current-buffer "*scratch*" …)`. Exactly one literal string argument, nonempty block, no block parameters. Valid inside a command body or nested inside another buffer block. Uses an existing buffer and preserves normal Emacs missing-buffer errors. |
 | `insert("text")` | Emits `(insert "text")`. Exactly one literal string argument, no block. Valid inside a command body or a buffer block. |
 | `el.message("value: %s", el.buffer_name)` | Calls an Emacs Lisp function through the explicit `el` namespace. Calls may be statements or nested expressions. Arguments are recursively parsed expressions. Keyword arguments are rejected. |
@@ -104,11 +106,12 @@ everything else is rejected with a source position.
   applies breaks it. The list covers binding and assignment shapes
   (`el.let`/`el.let_star` — use `let`; `el.setq` — use `assign`;
   `el.setq_local` — use `assign_local`; `el.setq_default` — use
-  `el.set_default`; `el.lambda` — use `fn`; and `el.dlet`, `el.letrec`,
+  `el.set_default`; `el.lambda` — use `fn`; `el.dlet` — use
+  `dynamic_let`; and `el.letrec`,
   `el.named_let`, `el.cl_flet`, `el.cl_labels`, `el.cl_letf`,
   `el.while_let`, `el.when_let`, `el.if_let`, `el.pcase_let`,
-  `el.pcase_setq`, and `el.cl_do` — destructuring, recursion, and dynamic
-  rebinding have no Ruri construct, with `let`/`fn`/`while` covering most
+  `el.pcase_setq`, and `el.cl_do` — destructuring and recursion
+  have no Ruri construct, with `let`/`fn`/`while` covering most
   cases), iteration (`el.dolist`, `el.cl_dolist`, `el.dotimes`,
   `el.cl_dotimes`, `el.dotimes_with_progress_reporter`,
   `el.dolist_with_progress_reporter`, `el.seq_doseq`, and
@@ -343,7 +346,10 @@ Everything outside the table above, including but not limited to:
 - Executable top-level expressions: a `.ruri` file may contain only
   definitions and declarations — `command`, `function`, `variable`,
   `variable_local`, `constant`, `custom`, `require`, and `provide`
-  (plus comments).
+  (plus comments) — plus explicit `init` blocks for load-time setup.
+  A bare top-level expression remains rejected; what runs at load time
+  is visible in the source as an `init` block, and load order is
+  exactly the source order.
 - Nested `command` or `function` definitions; `interactive` outside a command body,
   duplicated, or not first; empty `with_current_buffer` blocks;
   `insert` with a block.
@@ -454,7 +460,21 @@ structure safely:
    position. The hoist-into-a-local workarounds recorded by the
    julia-mode and cmake-mode ports (their deviation 7 and 4) were
    deleted once the construct landed.
+10. Dynamic binding and load-time setup; v0.18 provides `dynamic_let`
+    (lowering to `dlet`, so callees see the rebinding even for
+    not-yet-special variables and the unwind path is correct — the
+    exact failure mode of hand-rolled save/restore) and top-level
+    `init` blocks, which let a converted package register itself at
+    load while the file stays analyzable. The cmake-mode and julia-mode
+    save/restore and registration workarounds were deleted; both modes
+    now auto-activate on file visits.
 
 Some Elisp facilities will remain available through explicit `el.*` forms
 instead of receiving dedicated Ruby syntax. That keeps Ruri small while still
-allowing the generated program to use the wider Emacs API.
+allowing the generated program to use the wider Emacs API. Rejected
+sub-grammars are permanent, not a waiting list: `rx`, `pcase`, and
+`cl-loop` have their own grammars, and expressing them in Ruri would mean
+building a second language. Pre-expanding static `rx` forms to literal
+regexp strings with batch Emacs, and computing dynamic ones at runtime
+with `el.rx_to_string` over quasiquoted data, is the documented path —
+both mode ports use it.

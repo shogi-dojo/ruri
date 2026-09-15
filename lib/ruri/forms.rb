@@ -27,6 +27,12 @@ module Ruri
     # +source_name+ is the symbol as written; +name+ is the Emacs Lisp
     # name after `_` -> `-` conversion.
     Command = Data.define(:source_name, :name, :parameters, :body)
+
+    # `init do … end` is load-time setup: its body forms are emitted at
+    # the top level in source order (wrapped in a hygienic let when the
+    # body assigns locals), so a converted package can register itself —
+    # auto-mode-alist entries, hooks — while the file stays analyzable.
+    Init = Data.define(:body)
     # Top-level noninteractive function with hygienic parameters.
     FunctionDefinition = Data.define(:source_name, :name, :parameters, :body)
 
@@ -149,6 +155,14 @@ module Ruri
     # without a default binds nil. The body's final form supplies the
     # value, and the bindings are visible only inside the block.
     Let = Data.define(:parameters, :body)
+
+    # `dynamic_let :name, value do … end` rebinds an Emacs Lisp variable
+    # with dynamic semantics, lowering to `dlet` (which defvars each
+    # bound name, so callees see the binding even when the variable is
+    # not yet special). Pairs are [elisp_name, value_form]; parallel
+    # binding, like Elisp's own `let`. The body's final form supplies
+    # the value, and the binding unwinds on the error path.
+    DynamicLet = Data.define(:pairs, :body)
 
     # Counting loop: `count.times do |i| … end` lowers to dotimes with a
     # hygienic counter. The form's value is nil, matching dotimes rather

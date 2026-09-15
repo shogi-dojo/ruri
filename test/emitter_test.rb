@@ -632,4 +632,61 @@ class EmitterTest < Minitest::Test
       (if ruri--local-flag "on" "off"))
     ELISP
   end
+
+  def test_emits_dynamic_let_as_a_dlet
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :rebind do
+        interactive
+        dynamic_let :resize_mini_windows, nil, :case_fold_search, true do
+          el.shell_command("ls", nil)
+        end
+      end
+    RURI
+
+    # dlet comes from subr-x, which is not preloaded before Emacs 28, so
+    # the generated file carries its own require.
+    assert_includes output, <<~ELISP.chomp
+      (require 'subr-x)
+    ELISP
+    assert_includes output, <<-'ELISP'.chomp
+  (dlet
+    (
+      (resize-mini-windows nil)
+      (case-fold-search t))
+    (shell-command "ls" nil))
+    ELISP
+  end
+
+  def test_dynamic_let_does_not_duplicate_an_explicit_subr_x_require
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      require :subr_x
+      command :rebind do
+        interactive
+        dynamic_let :some_var, 1 do
+          el.identity(1)
+        end
+      end
+    RURI
+
+    assert_equal 1, output.scan("(require 'subr-x)").length
+  end
+
+  def test_emits_init_body_as_top_level_forms
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      init do
+        el.add_to_list(:auto_mode_alist, cons("CMakeLists.txt", :cmake_mode))
+        assigned = el.upcase("x")
+        el.ignore(assigned)
+      end
+    RURI
+
+    assert_includes output, <<~ELISP.chomp
+      (let (ruri--local-assigned)
+        (add-to-list 'auto-mode-alist
+          (cons "CMakeLists.txt" 'cmake-mode))
+        (setq ruri--local-assigned
+          (upcase "x"))
+        (ignore ruri--local-assigned))
+    ELISP
+  end
 end
