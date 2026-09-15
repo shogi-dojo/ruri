@@ -37,24 +37,36 @@ module Ruri
     }.freeze
 
     def lower(definitions)
-      definitions.map do |definition|
-        case definition
-        when Forms::Command then lower_command(definition)
-        when Forms::FunctionDefinition then lower_function_definition(definition)
-        when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
-        when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
-        when Forms::VariableLocalDefinition then lower_variable_definition(definition, "defvar-local")
-        when Forms::CustomDefinition then lower_custom_definition(definition)
-        when Forms::Mode then lower_mode(definition)
-        when Forms::DerivedMode then lower_derived_mode(definition)
-        when Forms::Require then lower_feature(definition, "require")
-        when Forms::Provide then lower_feature(definition, "provide")
-        else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
-        end
+      definitions.flat_map do |definition|
+        lowered = case definition
+                  when Forms::Command then lower_command(definition)
+                  when Forms::FunctionDefinition then lower_function_definition(definition)
+                  when Forms::VariableDefinition then lower_variable_definition(definition, "defvar")
+                  when Forms::ConstantDefinition then lower_variable_definition(definition, "defconst")
+                  when Forms::VariableLocalDefinition then lower_variable_definition(definition, "defvar-local")
+                  when Forms::CustomDefinition then lower_custom_definition(definition)
+                  when Forms::Mode then lower_mode(definition)
+                  when Forms::DerivedMode then lower_derived_mode(definition)
+                  when Forms::Require then lower_feature(definition, "require")
+                  when Forms::Provide then lower_feature(definition, "provide")
+                  when Forms::Init then lower_init(definition)
+                  else raise ArgumentError, "cannot lower Ruri definition: #{definition.class}"
+                  end
+        lowered.is_a?(Array) ? lowered : [lowered]
       end
     end
 
     private
+
+    # `init` emits its body forms at the top level in source order — the
+    # one definition-kind that yields multiple top-level forms. Assigned
+    # locals get the same hygienic let wrapper a definition body gets,
+    # because there is no enclosing scope to hold them otherwise.
+    def lower_init(init)
+      forms = init.body.map { |statement| lower_statement(statement) }
+      locals = collect_locals(init.body)
+      locals.empty? ? forms : wrap_locals(locals, forms)
+    end
 
     def lower_command(command)
       doc_form, statements = partition_docstring(command.body)

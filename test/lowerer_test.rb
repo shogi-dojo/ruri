@@ -742,6 +742,23 @@ class LowererTest < Minitest::Test
     assert_equal 5, throw_form.items[2].value
   end
 
+  def test_lowers_init_to_multiple_top_level_forms
+    lowered = Ruri::Lowerer.lower(parse(<<~RURI))
+      init do
+        el.message("first")
+        assigned = el.upcase("x")
+        el.ignore(assigned)
+      end
+    RURI
+
+    assert_equal 1, lowered.length
+    let_form = lowered[0]
+    assert_equal "let", let_form.items.first.name
+    assert_equal ["ruri--local-assigned"], let_form.items[1].items.map(&:name)
+    assert_equal "message", let_form.items[2].items.first.name
+    assert_equal "setq", let_form.items[3].items.first.name
+  end
+
   def test_loops_without_exits_emit_no_catch
     function = parse(<<~RURI).first
       function :plain do

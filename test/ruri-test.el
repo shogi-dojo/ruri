@@ -237,6 +237,27 @@
     (condition-case nil (probe-signal "boom") (error nil))
     (should (equal "outer" ruri-dlet-probe-var))))
 
+(ert-deftest ruri-test/init-blocks-run-at-load-in-source-order ()
+  (let* ((dir (make-temp-file "ruri init " t))
+         (source (expand-file-name "init.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_init_probe_var, nil, \"Probe variable.\"\n\n"
+              "init do\n"
+              "  assign :ruri_init_probe_var, \"first\"\n"
+              "end\n\n"
+              "function :init_reader_fn do\n"
+              "  var(:ruri_init_probe_var)\n"
+              "end\n\n"
+              "init do\n"
+              "  assign :ruri_init_probe_var,\n"
+              "         el.concat(var(:ruri_init_probe_var), \" second\")\n"
+              "  el.message(\"init ran\")\n"
+              "end\n"))
+    (ruri-load-file source)
+    (should (equal "first second" ruri-init-probe-var))
+    (should (functionp #'init-reader-fn))
+    (should (equal "first second" (init-reader-fn)))))
+
 (ert-deftest ruri-test/generic-block-forms-run-in-emacs ()
   (let* ((dir (make-temp-file "ruri block forms " t))
          (source (expand-file-name "blocks.ruri" dir)))

@@ -829,6 +829,57 @@ end')
     assert_match(/`break` cannot cross a dynamic_let block boundary/, diagnostics[0].message)
   end
 
+  def test_parses_init_blocks_in_source_order_among_definitions
+    definitions = parse(<<~RURI)
+      function :early do
+        1
+      end
+
+      init do
+        el.message("first")
+      end
+
+      function :late do
+        2
+      end
+
+      init do
+        el.message("second")
+      end
+    RURI
+
+    kinds = definitions.map { |d| d.class.name.delete_prefix("Ruri::Forms::") }
+    assert_equal ["FunctionDefinition", "Init", "FunctionDefinition", "Init"], kinds
+    assert_equal 1, definitions[1].body.length
+    assert_equal "message", definitions[1].body.first.name
+    assert_equal "second", definitions[3].body.first.arguments.first.value
+  end
+
+  def test_rejects_malformed_init
+    diagnostics = diagnostics_of(<<~RURI)
+      init "setup" do
+        el.ignore(1)
+      end
+
+      init do |x|
+        el.ignore(x)
+      end
+
+      init do
+        return 5
+      end
+
+      init do
+        doc "not here"
+      end
+    RURI
+
+    assert_match(/init takes no call arguments/, diagnostics[0].message)
+    assert_match(/init blocks do not take parameters/, diagnostics[1].message)
+    assert_match(/return is only allowed inside a command, function, or fn body/, diagnostics[2].message)
+    assert_match(/doc is only allowed once, as the first statement/, diagnostics[3].message)
+  end
+
   def test_parses_boolean_comparison_and_arithmetic_operators
     command = parse(<<~RURI).first
       command :operators do

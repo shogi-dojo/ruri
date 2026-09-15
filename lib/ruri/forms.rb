@@ -27,6 +27,12 @@ module Ruri
     # +source_name+ is the symbol as written; +name+ is the Emacs Lisp
     # name after `_` -> `-` conversion.
     Command = Data.define(:source_name, :name, :parameters, :body)
+
+    # `init do … end` is load-time setup: its body forms are emitted at
+    # the top level in source order (wrapped in a hygienic let when the
+    # body assigns locals), so a converted package can register itself —
+    # auto-mode-alist entries, hooks — while the file stays analyzable.
+    Init = Data.define(:body)
     # Top-level noninteractive function with hygienic parameters.
     FunctionDefinition = Data.define(:source_name, :name, :parameters, :body)
 

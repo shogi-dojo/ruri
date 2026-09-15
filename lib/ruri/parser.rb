@@ -293,8 +293,40 @@ module Ruri
       when :variable_local then parse_variable_definition(node, "variable_local", "defvar-local", false)
       when :require then parse_feature_form(node, :require)
       when :provide then parse_feature_form(node, :provide)
+      when :init then parse_init(node)
       else unsupported(node)
       end
+    end
+
+    # `init do … end` is load-time setup, the one allowed non-definition
+    # at the top level: its body forms are emitted in source order when
+    # the generated file loads. No parameters, no docstring, no
+    # interactive, and no return (there is no enclosing definition to
+    # return from).
+    def parse_init(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `init` with explicit receiver")
+        return
+      end
+      if node.arguments
+        error(node.location, "init takes no call arguments")
+        return
+      end
+      unless node.block
+        error(node.location, "init requires a do...end block")
+        return
+      end
+      if node.block.parameters
+        error(block_parameters_location(node.block), "init blocks do not take parameters")
+        return
+      end
+
+      body = with_local_scope(node.block) do
+        with_exit_scope(:init) do
+          parse_buffer_statements(node.block.body&.body || [])
+        end
+      end
+      @definitions << Forms::Init.new(body: body)
     end
 
     def parse_command_definition(node)
@@ -1315,6 +1347,10 @@ module Ruri
     end
 
     def parse_return_statement(node)
+      unless @exit_scopes.reverse.any? { |kind| %i[definition fn].include?(kind) }
+        error(node.location,
+              "return is only allowed inside a command, function, or fn body")
+      end
       Forms::Return.new(value: parse_exit_value(node, "return"))
     end
 

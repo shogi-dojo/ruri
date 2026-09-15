@@ -651,4 +651,23 @@ class EmitterTest < Minitest::Test
     (shell-command "ls" nil))
     ELISP
   end
+
+  def test_emits_init_body_as_top_level_forms
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      init do
+        el.add_to_list(:auto_mode_alist, cons("CMakeLists.txt", :cmake_mode))
+        assigned = el.upcase("x")
+        el.ignore(assigned)
+      end
+    RURI
+
+    assert_includes output, <<~ELISP.chomp
+      (let (ruri--local-assigned)
+        (add-to-list 'auto-mode-alist
+          (cons "CMakeLists.txt" 'cmake-mode))
+        (setq ruri--local-assigned
+          (upcase "x"))
+        (ignore ruri--local-assigned))
+    ELISP
+  end
 end
