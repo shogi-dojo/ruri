@@ -903,51 +903,10 @@ module Ruri
             interactive_problem_reported = true
             error(stmt.location, "interactive must appear exactly once, directly after the optional docstring")
           end
-        when :command
-          error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :mode, :derived_mode,
-             :variable_local, :require, :provide
-          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
-        when :function
-          if stmt.block
-            error(stmt.location, "nested function definitions are not supported")
-          else
+        else
+          unless append_shared_statement?(stmt, forms)
             unsupported(stmt)
           end
-        when :with_current_buffer
-          if (form = parse_with_current_buffer(stmt))
-            forms << form
-          end
-        when :insert
-          if (form = parse_insert(stmt))
-            forms << form
-          end
-        when :assign
-          if (form = parse_assign_statement(stmt))
-            forms << form
-          end
-        when :assign_local
-          if (form = parse_assign_local_statement(stmt))
-            forms << form
-          end
-        when :catch
-          if (form = parse_catch(stmt))
-            forms << form
-          end
-        when :throw
-          if (form = parse_throw(stmt))
-            forms << form
-          end
-        when :let
-          if (form = parse_let(stmt))
-            forms << form
-          end
-        when :dynamic_let
-          if (form = parse_dynamic_let(stmt))
-            forms << form
-          end
-        else
-          unsupported(stmt)
         end
       end
       unless interactive_seen || interactive_problem_reported
@@ -955,6 +914,64 @@ module Ruri
         error(anchor, "command body must start with interactive")
       end
       forms
+    end
+
+    # The statement-dispatch table shared by command bodies and every
+    # other statement body (function, let, init, mode, ...). Handles all
+    # named statements except `doc` and `interactive`, which only a
+    # command body can accept and whose placement rules the
+    # command-body loop owns. Returns true when the statement was
+    # recognized — diagnosed and appended to +forms+ where valid — and
+    # false when the caller should report it as unsupported.
+    def append_shared_statement?(stmt, forms)
+      case stmt.name
+      when :command
+        error(stmt.location, "nested command definitions are not supported")
+      when :variable, :constant, :custom, :mode, :derived_mode,
+           :variable_local, :require, :provide
+        error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
+      when :function
+        if stmt.block
+          error(stmt.location, "nested function definitions are not supported")
+        else
+          unsupported(stmt)
+        end
+      when :with_current_buffer
+        if (form = parse_with_current_buffer(stmt))
+          forms << form
+        end
+      when :insert
+        if (form = parse_insert(stmt))
+          forms << form
+        end
+      when :assign
+        if (form = parse_assign_statement(stmt))
+          forms << form
+        end
+      when :assign_local
+        if (form = parse_assign_local_statement(stmt))
+          forms << form
+        end
+      when :catch
+        if (form = parse_catch(stmt))
+          forms << form
+        end
+      when :throw
+        if (form = parse_throw(stmt))
+          forms << form
+        end
+      when :let
+        if (form = parse_let(stmt))
+          forms << form
+        end
+      when :dynamic_let
+        if (form = parse_dynamic_let(stmt))
+          forms << form
+        end
+      else
+        return false
+      end
+      true
     end
 
     def parse_with_current_buffer(node)
@@ -2312,51 +2329,10 @@ module Ruri
           error(stmt.location, "doc is only allowed once, as the first statement of a command or function body")
         when :interactive
           error(stmt.location, "interactive is only allowed as the first statement of a command body")
-        when :command
-          error(stmt.location, "nested command definitions are not supported")
-        when :variable, :constant, :custom, :mode, :derived_mode,
-             :variable_local, :require, :provide
-          error(stmt.location, "#{stmt.name} is only allowed at the top level of a .ruri file")
-        when :function
-          if stmt.block
-            error(stmt.location, "nested function definitions are not supported")
-          else
+        else
+          unless append_shared_statement?(stmt, forms)
             unsupported(stmt)
           end
-        when :with_current_buffer
-          if (form = parse_with_current_buffer(stmt))
-            forms << form
-          end
-        when :insert
-          if (form = parse_insert(stmt))
-            forms << form
-          end
-        when :assign
-          if (form = parse_assign_statement(stmt))
-            forms << form
-          end
-        when :assign_local
-          if (form = parse_assign_local_statement(stmt))
-            forms << form
-          end
-        when :catch
-          if (form = parse_catch(stmt))
-            forms << form
-          end
-        when :throw
-          if (form = parse_throw(stmt))
-            forms << form
-          end
-        when :let
-          if (form = parse_let(stmt))
-            forms << form
-          end
-        when :dynamic_let
-          if (form = parse_dynamic_let(stmt))
-            forms << form
-          end
-        else
-          unsupported(stmt)
         end
       end
       forms
