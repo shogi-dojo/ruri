@@ -18,6 +18,7 @@ module Ruri
       @break_tags = []
       @next_tags = []
       @return_tags = []
+      @used_dlet = false
     end
 
     # Boundaries where an exit belongs to the inner construct: nested loops
@@ -37,7 +38,7 @@ module Ruri
     }.freeze
 
     def lower(definitions)
-      definitions.flat_map do |definition|
+      forms = definitions.flat_map do |definition|
         lowered = case definition
                   when Forms::Command then lower_command(definition)
                   when Forms::FunctionDefinition then lower_function_definition(definition)
@@ -54,6 +55,8 @@ module Ruri
                   end
         lowered.is_a?(Array) ? lowered : [lowered]
       end
+      forms.unshift(subr_x_require) if @used_dlet && !requires_subr_x?(definitions)
+      forms
     end
 
     private
@@ -667,6 +670,7 @@ module Ruri
     # miss it — the failure class the unevaluated-position rejections
     # exist to prevent.
     def lower_dynamic_let(dynamic_let)
+      @used_dlet = true
       bindings = dynamic_let.pairs.map do |name, value|
         Elisp.list(Elisp.symbol(name), lower_expression(value))
       end
@@ -675,6 +679,18 @@ module Ruri
         Elisp.list(*bindings),
         *dynamic_let.body.map { |statement| lower_statement(statement) }
       )
+    end
+
+    # dlet lives in subr-x: preloaded since Emacs 28, but not earlier, so
+    # a generated file that uses dynamic_let carries its own require and
+    # stays self-contained. Skipped when the source already requires the
+    # feature explicitly.
+    def requires_subr_x?(definitions)
+      definitions.any? { |d| d.is_a?(Forms::Require) && d.name == "subr-x" }
+    end
+
+    def subr_x_require
+      Elisp.list(Elisp.symbol("require"), Elisp.quote(Elisp.symbol("subr-x")))
     end
 
     # break/next/return become throws against the current innermost tag;

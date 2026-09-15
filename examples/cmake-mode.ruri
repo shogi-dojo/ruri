@@ -30,7 +30,6 @@
 
 require :rst
 require :rx
-require :subr_x
 
 custom :cmake_mode_cmake_executable, "cmake",
        "The name of the cmake executable.\n\nThis can be either absolute or looked up in $PATH.  You can also\nset the path with these commands:\n (setenv \"PATH\" (concat (getenv \"PATH\") \";C:\\\\Program Files\\\\CMake 2.8\\\\bin\"))\n (setenv \"PATH\" (concat (getenv \"PATH\") \":/usr/local/cmake/bin\"))",

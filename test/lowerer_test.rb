@@ -714,7 +714,9 @@ class LowererTest < Minitest::Test
       end
     RURI
 
-    defun = Ruri::Lowerer.lower([command]).first
+    lowered = Ruri::Lowerer.lower([command])
+    assert_equal "require", lowered.first.items.first.name
+    defun = lowered.last
     dynamic_let = defun.items.last
     assert_equal "dlet", dynamic_let.items.first.name
     binding_pair = dynamic_let.items[1].items.first
@@ -733,7 +735,7 @@ class LowererTest < Minitest::Test
       end
     RURI
 
-    lowered = Ruri::Lowerer.lower([function]).first
+    lowered = Ruri::Lowerer.lower([function]).last
     return_catch = lowered.items[3]
     assert_equal "catch", return_catch.items.first.name
     assert_equal "ruri--return-1", return_catch.items[1].value.name

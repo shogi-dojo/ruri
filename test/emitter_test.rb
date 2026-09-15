@@ -643,6 +643,11 @@ class EmitterTest < Minitest::Test
       end
     RURI
 
+    # dlet comes from subr-x, which is not preloaded before Emacs 28, so
+    # the generated file carries its own require.
+    assert_includes output, <<~ELISP.chomp
+      (require 'subr-x)
+    ELISP
     assert_includes output, <<-'ELISP'.chomp
   (dlet
     (
@@ -650,6 +655,20 @@ class EmitterTest < Minitest::Test
       (case-fold-search t))
     (shell-command "ls" nil))
     ELISP
+  end
+
+  def test_dynamic_let_does_not_duplicate_an_explicit_subr_x_require
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      require :subr_x
+      command :rebind do
+        interactive
+        dynamic_let :some_var, 1 do
+          el.identity(1)
+        end
+      end
+    RURI
+
+    assert_equal 1, output.scan("(require 'subr-x)").length
   end
 
   def test_emits_init_body_as_top_level_forms
