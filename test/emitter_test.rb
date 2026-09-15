@@ -632,4 +632,23 @@ class EmitterTest < Minitest::Test
       (if ruri--local-flag "on" "off"))
     ELISP
   end
+
+  def test_emits_dynamic_let_as_a_dlet
+    output = Ruri.compile(<<~RURI, path: "test.ruri")
+      command :rebind do
+        interactive
+        dynamic_let :resize_mini_windows, nil, :case_fold_search, true do
+          el.shell_command("ls", nil)
+        end
+      end
+    RURI
+
+    assert_includes output, <<-'ELISP'.chomp
+  (dlet
+    (
+      (resize-mini-windows nil)
+      (case-fold-search t))
+    (shell-command "ls" nil))
+    ELISP
+  end
 end

@@ -704,6 +704,44 @@ class LowererTest < Minitest::Test
     assert_equal "mapc", mapc.items.first.name
   end
 
+  def test_lowers_dynamic_let_to_dlet_with_dynamic_scope
+    command = parse(<<~RURI).first
+      command :rebind do
+        interactive
+        dynamic_let :resize_mini_windows, nil do
+          el.shell_command("ls", nil)
+        end
+      end
+    RURI
+
+    defun = Ruri::Lowerer.lower([command]).first
+    dynamic_let = defun.items.last
+    assert_equal "dlet", dynamic_let.items.first.name
+    binding_pair = dynamic_let.items[1].items.first
+    assert_equal "resize-mini-windows", binding_pair.items.first.name
+    assert_equal "nil", binding_pair.items[1].name
+    assert_equal "shell-command", dynamic_let.items[2].items.first.name
+  end
+
+  def test_return_inside_dynamic_let_wraps_the_defun_in_a_catch
+    function = parse(<<~RURI).first
+      function :early do |flag|
+        dynamic_let :some_var, 1 do
+          return 5
+        end
+        6
+      end
+    RURI
+
+    lowered = Ruri::Lowerer.lower([function]).first
+    return_catch = lowered.items[3]
+    assert_equal "catch", return_catch.items.first.name
+    assert_equal "ruri--return-1", return_catch.items[1].value.name
+    throw_form = return_catch.items[2].items[2]
+    assert_equal "throw", throw_form.items.first.name
+    assert_equal 5, throw_form.items[2].value
+  end
+
   def test_loops_without_exits_emit_no_catch
     function = parse(<<~RURI).first
       function :plain do

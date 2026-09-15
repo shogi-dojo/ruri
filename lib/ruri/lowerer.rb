@@ -25,7 +25,7 @@ module Ruri
     # neither (the parser rejects exits crossing a let).
     LOOP_EXIT_BOUNDARIES = [
       Forms::Lambda, Forms::Loop, Forms::Each, Forms::Iteration,
-      Forms::Times, Forms::Let
+      Forms::Times, Forms::Let, Forms::DynamicLet
     ].freeze
 
     # `.map` → mapcar, `.select` → seq-filter, `.find` → seq-find. The
@@ -336,6 +336,9 @@ module Ruri
           collect_locals(statement.body, names, shadowed)
         when Forms::Let
           collect_locals(statement.body, names, shadowed + statement.parameters.names)
+        when Forms::DynamicLet
+          statement.pairs.each { |_, value| collect_expression_locals(value, names, shadowed) }
+          collect_locals(statement.body, names, shadowed)
         when Forms::Throw
           collect_expression_locals(statement.value, names, shadowed)
         when Forms::PlaceOperation
@@ -394,6 +397,9 @@ module Ruri
         collect_expression_locals(expression.value, names, shadowed)
       when Forms::Let
         collect_locals(expression.body, names, shadowed + expression.parameters.names)
+      when Forms::DynamicLet
+        expression.pairs.each { |_, value| collect_expression_locals(value, names, shadowed) }
+        collect_locals(expression.body, names, shadowed)
       when Forms::PlaceOperation
         collect_expression_locals(expression.place, names, shadowed) if expression.place.is_a?(Forms::Call)
         expression.arguments.each { |argument| collect_expression_locals(argument, names, shadowed) }
@@ -463,6 +469,8 @@ module Ruri
         lower_throw(statement)
       when Forms::Let
         lower_let(statement)
+      when Forms::DynamicLet
+        lower_dynamic_let(statement)
       when Forms::PlaceOperation
         lower_place_operation(statement)
       when Forms::Break
@@ -568,6 +576,8 @@ module Ruri
         lower_throw(expression)
       when Forms::Let
         lower_let(expression)
+      when Forms::DynamicLet
+        lower_dynamic_let(expression)
       when Forms::PlaceOperation
         lower_place_operation(expression)
       else
@@ -635,6 +645,23 @@ module Ruri
         Elisp.symbol("let*"),
         Elisp.list(*bindings),
         *let_form.body.map { |statement| lower_statement(statement) }
+      )
+    end
+
+    # `dynamic_let` lowers to dlet, not plain let: dlet defvars each bound
+    # name before the binding, so a function called inside the block sees
+    # the rebinding even when the variable is not yet special. Plain let
+    # would bind such a variable lexically and callees would silently
+    # miss it — the failure class the unevaluated-position rejections
+    # exist to prevent.
+    def lower_dynamic_let(dynamic_let)
+      bindings = dynamic_let.pairs.map do |name, value|
+        Elisp.list(Elisp.symbol(name), lower_expression(value))
+      end
+      Elisp.list(
+        Elisp.symbol("dlet"),
+        Elisp.list(*bindings),
+        *dynamic_let.body.map { |statement| lower_statement(statement) }
       )
     end
 

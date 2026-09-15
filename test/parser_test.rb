@@ -744,6 +744,91 @@ end')
     assert_equal [2], conditional.else_body.map(&:expression).map(&:value)
   end
 
+  def test_parses_dynamic_let_in_statement_and_value_positions
+    definitions = parse(<<~RURI)
+      command :rebind do
+        interactive
+        dynamic_let :resize_mini_windows, nil, :case_fold_search, true do
+          el.message("rebound")
+        end
+      end
+
+      function :value_position do
+        dynamic_let :fill_paragraph_function, nil do
+          "inner"
+        end
+      end
+    RURI
+
+    dynamic_let = definitions.first.body[1]
+    assert_instance_of Ruri::Forms::DynamicLet, dynamic_let
+    assert_equal %w[resize-mini-windows case-fold-search],
+                 dynamic_let.pairs.map(&:first)
+    assert_instance_of Ruri::Forms::Literal, dynamic_let.pairs.first[1]
+    assert_nil dynamic_let.pairs.first[1].value
+    assert_equal true, dynamic_let.pairs[1][1].value
+    assert_equal "message", dynamic_let.body.first.name
+
+    tail = definitions.last.body.first
+    assert_instance_of Ruri::Forms::ExpressionStatement, tail
+    assert_instance_of Ruri::Forms::DynamicLet, tail.expression
+    assert_equal ["fill-paragraph-function"], tail.expression.pairs.map(&:first)
+    assert_equal "inner",
+                 tail.expression.body.first.expression.value
+  end
+
+  def test_rejects_malformed_dynamic_let
+    diagnostics = diagnostics_of(<<~RURI)
+      function :bad do
+        dynamic_let :x do
+          el.ignore(1)
+        end
+      end
+
+      function :bad2 do
+        dynamic_let "x", 1 do
+          el.ignore(1)
+        end
+      end
+
+      function :bad3 do
+        dynamic_let :t, 1 do
+          el.ignore(1)
+        end
+      end
+
+      function :bad4 do
+        dynamic_let :x, 1 do |p|
+          el.ignore(p)
+        end
+      end
+
+      function :bad5 do
+        dynamic_let :x, 1
+      end
+    RURI
+
+    assert_match(/dynamic_let requires name\/value pairs/, diagnostics[0].message)
+    assert_match(/dynamic_let requires literal symbol variable names/, diagnostics[1].message)
+    assert_match(/invalid variable name `t`/, diagnostics[2].message)
+    assert_match(/dynamic_let blocks do not take parameters/, diagnostics[3].message)
+    assert_match(/dynamic_let requires a do\.\.\.end block/, diagnostics[4].message)
+  end
+
+  def test_rejects_break_and_next_crossing_a_dynamic_let
+    diagnostics = diagnostics_of(<<~RURI)
+      function :loopy do |xs|
+        xs.each do |x|
+          dynamic_let :some_var, 1 do
+            break x
+          end
+        end
+      end
+    RURI
+
+    assert_match(/`break` cannot cross a dynamic_let block boundary/, diagnostics[0].message)
+  end
+
   def test_parses_boolean_comparison_and_arithmetic_operators
     command = parse(<<~RURI).first
       command :operators do
@@ -1719,7 +1804,7 @@ end')
     names = {
       "let" => "the Ruri let form",
       "let_star" => "the Ruri let form",
-      "dlet" => "cannot destructure",
+      "dlet" => "use the Ruri dynamic_let form",
       "letrec" => "use let with fn",
       "named_let" => "top-level function",
       "setq" => "assign",

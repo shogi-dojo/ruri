@@ -209,6 +209,34 @@
     (should (equal "early" (early t)))
     (should (equal "kept late" (early nil)))))
 
+(ert-deftest ruri-test/dynamic-let-rebinds-and-restores-in-emacs ()
+  (let* ((dir (make-temp-file "ruri dynamic-let " t))
+         (source (expand-file-name "dynamic-let.ruri" dir)))
+    (with-temp-file source
+      (insert "variable :ruri_dlet_probe_var, \"outer\", \"Probe variable.\"\n\n"
+              "function :probe_inner do\n"
+              "  var(:ruri_dlet_probe_var)\n"
+              "end\n\n"
+              "function :probe do\n"
+              "  dynamic_let :ruri_dlet_probe_var, \"inside\" do\n"
+              "    el.funcall(function(:probe_inner))\n"
+              "  end\n"
+              "end\n\n"
+              "function :probe_signal do |data|\n"
+              "  dynamic_let :ruri_dlet_probe_var, \"inside\" do\n"
+              "    el.signal(:error, data)\n"
+              "  end\n"
+              "end\n"))
+    (ruri-load-file source)
+    ;; The callee sees the rebinding: dlet binds dynamically, which a
+    ;; plain lexical let would not do for a callee.
+    (should (equal "inside" (probe)))
+    (should (equal "outer" ruri-dlet-probe-var))
+    ;; The binding unwinds on the error path too — the failure mode of
+    ;; hand-rolled save/restore without an ensure.
+    (condition-case nil (probe-signal "boom") (error nil))
+    (should (equal "outer" ruri-dlet-probe-var))))
+
 (ert-deftest ruri-test/generic-block-forms-run-in-emacs ()
   (let* ((dir (make-temp-file "ruri block forms " t))
          (source (expand-file-name "blocks.ruri" dir)))

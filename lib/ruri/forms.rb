@@ -150,6 +150,14 @@ module Ruri
     # value, and the bindings are visible only inside the block.
     Let = Data.define(:parameters, :body)
 
+    # `dynamic_let :name, value do … end` rebinds an Emacs Lisp variable
+    # with dynamic semantics, lowering to `dlet` (which defvars each
+    # bound name, so callees see the binding even when the variable is
+    # not yet special). Pairs are [elisp_name, value_form]; parallel
+    # binding, like Elisp's own `let`. The body's final form supplies
+    # the value, and the binding unwinds on the error path.
+    DynamicLet = Data.define(:pairs, :body)
+
     # Counting loop: `count.times do |i| … end` lowers to dotimes with a
     # hygienic counter. The form's value is nil, matching dotimes rather
     # than Ruby's Integer#times.

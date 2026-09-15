@@ -53,7 +53,7 @@ module Ruri
     UNEVALUATED_POSITION_CALLS = {
       "let" => "use the Ruri let form",
       "let-star" => "use the Ruri let form; it binds sequentially",
-      "dlet" => "Ruri cannot destructure; bind with let and read with el.car and el.nth",
+      "dlet" => "use the Ruri dynamic_let form",
       "letrec" => "use let with fn; the body sees the binding, so recursion works",
       "named-let" => "rewrite the loop as a top-level function, or use .times/.each",
       "setq" => "use assign(:name, value)",
@@ -910,6 +910,10 @@ module Ruri
           if (form = parse_let(stmt))
             forms << form
           end
+        when :dynamic_let
+          if (form = parse_dynamic_let(stmt))
+            forms << form
+          end
         else
           unsupported(stmt)
         end
@@ -1212,6 +1216,60 @@ module Ruri
       Forms::Let.new(parameters: generated_parameter_list(parameters), body: body)
     end
 
+    # `dynamic_let :name, value do … end` rebinds an Emacs Lisp variable
+    # for the block's extent. The names sit in an unevaluated position,
+    # so this is a typed form like assign rather than an el.* call; the
+    # names are Elisp variables, not Ruri locals, and lower to their
+    # kebab-case symbols.
+    def parse_dynamic_let(node)
+      if node.receiver
+        error(node.location, "unsupported construct: method call `dynamic_let` with explicit receiver")
+        return nil
+      end
+      unless node.block
+        error(node.location, "dynamic_let requires a do...end block")
+        return nil
+      end
+      if node.block.parameters
+        error(block_parameters_location(node.block), "dynamic_let blocks do not take parameters")
+        return nil
+      end
+
+      positional, keywords = split_arguments(node)
+      unless keywords.empty?
+        error(node.location, "dynamic_let does not accept keyword arguments")
+        return nil
+      end
+      if positional.empty? || positional.length.odd?
+        error(node.location, "dynamic_let requires name/value pairs")
+        return nil
+      end
+
+      pairs = []
+      positional.each_slice(2) do |name_node, value_node|
+        unless literal_symbol_node?(name_node)
+          error(name_node.location, "dynamic_let requires literal symbol variable names")
+          return nil
+        end
+        ok, source_name = extract_symbol(name_node)
+        return nil unless ok
+
+        unless source_name.match?(NAME_RE) && !%w[t nil].include?(source_name)
+          error(name_node.location,
+                "invalid variable name `#{source_name}`; must match [a-z][a-z0-9_]*")
+          return nil
+        end
+        value = parse_expression(value_node)
+        return nil unless value
+
+        pairs << [source_name.tr("_", "-"), value]
+      end
+      body = with_exit_scope(:dynamic_let) do
+        parse_value_body(node.block.body&.body || [])
+      end
+      Forms::DynamicLet.new(pairs: pairs, body: body)
+    end
+
     def parse_structured_statement(node)
       case node
       when Prism::LocalVariableWriteNode
@@ -1276,7 +1334,7 @@ module Ruri
     # cannot be lowered, or nil when it is fine.
     def exit_placement_error(_node, name)
       nearest = @exit_scopes.reverse.find do |kind|
-        %i[loop fn definition block].include?(kind)
+        %i[loop fn definition block dynamic_let].include?(kind)
       end
       if nearest == :loop
         nil
@@ -1284,6 +1342,8 @@ module Ruri
         "`#{name}` cannot cross a fn boundary; use it directly inside while, until, or each"
       elsif nearest == :block
         "`#{name}` cannot cross a let block boundary; use it directly inside the loop"
+      elsif nearest == :dynamic_let
+        "`#{name}` cannot cross a dynamic_let block boundary; use it directly inside the loop"
       else
         "`#{name}` is only allowed inside while, until, or each"
       end
@@ -1572,6 +1632,7 @@ module Ruri
         return parse_catch(node) if unqualified_call?(node, :catch)
         return parse_throw(node) if unqualified_call?(node, :throw)
         return parse_let(node) if unqualified_call?(node, :let)
+        return parse_dynamic_let(node) if unqualified_call?(node, :dynamic_let)
         if unqualified_call?(node, :unquote) || unqualified_call?(node, :splice)
           return error(node.location,
                        "#{node.name} is only allowed inside quasiquote")
@@ -2250,6 +2311,10 @@ module Ruri
           end
         when :let
           if (form = parse_let(stmt))
+            forms << form
+          end
+        when :dynamic_let
+          if (form = parse_dynamic_let(stmt))
             forms << form
           end
         else
