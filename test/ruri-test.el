@@ -1002,6 +1002,21 @@ while `variable_local' next to it was fenced, so check the whole set."
     (should (commandp 'cmake-help-command))
     (should (commandp 'cmake-unscreamify-buffer))))
 
+(ert-deftest ruri-test/cmake-mode-port-auto-activates-on-visit ()
+  (let* ((dir (make-temp-file "ruri cmake-auto " t))
+         (source (expand-file-name "cmake-mode.ruri" dir))
+         ;; The port's init block mutates auto-mode-alist at load; the
+         ;; let-binding keeps the mutation contained to this test.
+         (auto-mode-alist auto-mode-alist))
+    (copy-file (expand-file-name "examples/cmake-mode.ruri" ruri-test--root) source t)
+    (ruri-load-file source)
+    (dolist (name '("CMakeLists.txt" "helper.cmake"))
+      (let ((file (expand-file-name name dir)))
+        (with-temp-file file (insert "# probe\n"))
+        (with-current-buffer (find-file-noselect file)
+          (should (eq major-mode 'cmake-mode))
+          (kill-buffer))))))
+
 (ert-deftest ruri-test/julia-mode-port-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri julia " t))
          (original (expand-file-name "examples/julia-mode.ruri" ruri-test--root))
