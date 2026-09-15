@@ -1073,8 +1073,10 @@ while `variable_local' next to it was fenced, so check the whole set."
       (goto-char (point-max))
       (julia-latexsub-or-indent)
       (should (equal "α" (buffer-string))))
-    ;; defcustoms keep their values.
-    (should (= 4 julia-indent-offset))
+    ;; The generated data table was ported in full, not as a stub.
+    (should (= 3698 (hash-table-count julia-mode-latexsubs)))
+    (should (equal "∑" (gethash "\\sum" julia-mode-latexsubs)))
+    ;; defcustoms keep their values.    (should (= 4 julia-indent-offset))
     (should (= 20000 julia-max-block-lookback))
     (should (commandp 'julia-fill-paragraph))
     (should (commandp 'julia-end-of-defun))))
