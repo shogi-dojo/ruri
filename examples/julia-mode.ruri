@@ -26,23 +26,23 @@
 # 6. cond / when-let / if-let / cl-flet / cl-loop are rejected: rewritten
 #    as if/elsif chains, let + fn, and while loops. The two cl-flet
 #    accumulators are small enough to inline.
-# 7. A let binding cannot shadow a dynamic variable (locals are hygienic),
-#    so julia_fill_paragraph's `(let ((fill-paragraph-function nil)) …)`
-#    becomes an explicit save/restore wrapped in begin/ensure.
-# 8. The AUCTeX-gated block `(when (featurep 'latex) …)` is omitted:
+# 7. The AUCTeX-gated block `(when (featurep 'latex) …)` is omitted:
 #    Ruri definitions are unconditional top-level forms, so julia-math-mode
 #    and julia-math-insert have no expressible gate.
-# 9. derived_mode keyword arguments are not expressible: the original's
+# 8. derived_mode keyword arguments are not expressible: the original's
 #    :abbrev-table keyword becomes an `assign_local :local_abbrev_table`
 #    in the body, and :group is dropped (customize UI only).
-# 10. All 16 rx forms are pre-expanded to literal regexp strings with batch
-#     Emacs, exactly as cmake-mode.ruri does.
-# 11. The `;;;###autoload` cookie and its top-level add-to-list registration
-#     are omitted (top-level expression statements are not expressible);
-#     users add .jl to auto-mode-alist, exactly as cmake-mode.ruri does.
-# 12. defsubst is rejected (no inlining semantics);
+# 9. All 16 rx forms are pre-expanded to literal regexp strings with batch
+#    Emacs, exactly as cmake-mode.ruri does. This one is permanent by
+#    design: rx is a sub-language with its own grammar, which Ruri
+#    deliberately does not reimplement.
+# 10. The `;;;###autoload` cookie is omitted (it is a top-level comment
+#     convention). The auto-mode-alist registration itself runs in an
+#     init block, but without the cookie package.el cannot autoload
+#     M-x julia-mode before the file has been loaded.
+# 11. defsubst is rejected (no inlining semantics);
 #     julia_syntax_comment_or_string_p is a plain function.
-# 13. delete-backward-char is reserved for interactive use by the byte
+# 12. delete-backward-char is reserved for interactive use by the byte
 #     compiler, so its single use is expressed as el.delete_char with a
 #     negated count (same region deleted).
 
@@ -228,7 +228,7 @@ constant :julia_mode_syntax_table, el.julia__make_syntax_table,
 
 # Regexp constants. The original builds these with the rx macro; Ruri
 # cannot express rx, so each form was pre-expanded with batch Emacs
-# (deviation 10).
+# (deviation 9).
 
 # (rx (or (any "-" ";" "\\" "^" "!" "|" "?" "*" "<" "%" "," "=" ">" "+"
 #          "/" "&" "$" "~" ":") (syntax open-parenthesis) (syntax whitespace) bol)
@@ -688,12 +688,8 @@ command :julia_fill_paragraph do |justify, region|
   doc "`fill-paragraph-function' in julia-mode"
   interactive "P"
   # The original let-binds fill-paragraph-function dynamically to nil so
-  # recursive fill-paragraph calls use the default filler. Ruri locals are
-  # hygienic and cannot shadow a dynamic variable, so save and restore it
-  # around an ensure (deviation 7).
-  saved_fpf = var(:fill_paragraph_function)
-  assign :fill_paragraph_function, nil
-  begin
+  # recursive fill-paragraph calls use the default filler.
+  dynamic_let :fill_paragraph_function, nil do
     if region
       el.fill_paragraph(justify, region)
     # in strings, only consider the line containing the first
@@ -722,8 +718,6 @@ command :julia_fill_paragraph do |justify, region|
     else
       el.fill_paragraph(justify, region)
     end
-  ensure
-    assign :fill_paragraph_function, saved_fpf
   end
 end
 
@@ -901,7 +895,7 @@ constant :julia_imenu_generic_expression,
 
 # Mode definition. The original's :abbrev-table keyword is expressed as an
 # assign_local of local-abbrev-table in the body; :group is dropped
-# (deviation 9).
+# (deviation 8).
 derived_mode :julia_mode, :prog_mode, "Julia" do
   doc "Major mode for editing julia code."
   el.julia__declare_faces()
@@ -1062,6 +1056,12 @@ end
 
 # Math insertion in julia. The original gates julia-math-mode on
 # (featurep 'latex) — AUCTeX — at load time; Ruri definitions are
-# unconditional top-level forms, so that block is omitted (deviation 8).
+# unconditional top-level forms, so that block is omitted (deviation 7).
+
+# Matching the original's ;;;###autoload registration, the port
+# registers its auto-mode-alist entry in an init block:
+init do
+  el.add_to_list(:auto_mode_alist, cons("\\.jl\\'", :julia_mode))
+end
 
 provide :julia_mode

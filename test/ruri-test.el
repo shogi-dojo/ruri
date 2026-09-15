@@ -1079,6 +1079,20 @@ while `variable_local' next to it was fenced, so check the whole set."
     (should (commandp 'julia-fill-paragraph))
     (should (commandp 'julia-end-of-defun))))
 
+(ert-deftest ruri-test/julia-mode-port-auto-activates-on-visit ()
+  (let* ((dir (make-temp-file "ruri julia-auto " t))
+         (source (expand-file-name "julia-mode.ruri" dir))
+         ;; The port's init block mutates auto-mode-alist at load; the
+         ;; let-binding keeps the mutation contained to this test.
+         (auto-mode-alist auto-mode-alist))
+    (copy-file (expand-file-name "examples/julia-mode.ruri" ruri-test--root) source t)
+    (ruri-load-file source)
+    (let ((file (expand-file-name "probe.jl" dir)))
+      (with-temp-file file (insert "x = 1\n"))
+      (with-current-buffer (find-file-noselect file)
+        (should (eq major-mode 'julia-mode))
+        (kill-buffer)))))
+
 (ert-deftest ruri-test/org-fragtog-conversion-runs-in-emacs ()
   (let* ((dir (make-temp-file "ruri org-fragtog " t))
          (source (expand-file-name "org-fragtog.ruri" dir)))
